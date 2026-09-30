@@ -437,6 +437,148 @@ def test_pack_info_and_strip_guards(tmp: Path, r: Result) -> None:
     module.analyze_pack(str(src), translate, logs4.append)
     r.check("无 CodeAssembly 时如实显示未包含", any("assembly_absent" in x for x in logs4))
 
+    # ---- 多平台剥离 ----
+    src2 = tmp / "multi.pack"
+    write(src2, json.dumps({
+        "WindowsBuild": "AAAA", "AndroidBuild": "BBBB", "MacBuild": "CCCC", "IOS_Build": "DDDD",
+        "CodeAssembly": "EEEE",
+    }))
+    logs5: list[str] = []
+    out5 = tmp / "multi_out.pack"
+    module.strip_pack(str(src2), str(out5), ["WindowsBuild", "AndroidBuild"], translate, logs5.append)
+    data5 = json.loads(out5.read_text(encoding="utf-8"))
+    r.check("多平台剥离只保留勾选平台与 CodeAssembly",
+            set(data5) == {"WindowsBuild", "AndroidBuild", "CodeAssembly"})
+    r.check("剥离前扫描输出了包内平台清单", any("strip_scan_header" in x for x in logs5))
+    r.check("被删平台逐个记录", sum("strip_removed" in x for x in logs5) == 2)
+
+    # 所选平台全不在包里 → 拒绝（绝不产出不含任何平台的包）
+    logs6: list[str] = []
+    module.strip_pack(str(src), str(tmp / "nope.pack"), ["WindowsBuild", "MacBuild"], translate, logs6.append)
+    r.check("所选平台全不在包里时拒绝剥离", not (tmp / "nope.pack").exists() and any("strip_no_target" in x for x in logs6))
+
+    # 部分不在包里 → 警告并只保留实有平台
+    logs7: list[str] = []
+    out7 = tmp / "partial.pack"
+    module.strip_pack(str(src), str(out7), ["AndroidBuild", "WindowsBuild"], translate, logs7.append)
+    data7 = json.loads(out7.read_text(encoding="utf-8"))
+    r.check("部分平台缺失时警告并只保留实有平台",
+            any("strip_missing_warn" in x for x in logs7) and set(data7) == {"AndroidBuild"})
+
+    # ---- 平台键存在但值为空 → 按"不存在"处理（防剥出带空平台块的包）----
+    src3 = tmp / "empty.pack"
+    write(src3, json.dumps({"AndroidBuild": "", "WindowsBuild": "AAAA"}))
+    logs8: list[str] = []
+    module.strip_pack(str(src3), str(tmp / "empty_only.pack"), ["AndroidBuild"], translate, logs8.append)
+    r.check("空值平台按不存在处理：只选它时拒绝剥离",
+            not (tmp / "empty_only.pack").exists() and any("strip_no_target" in x for x in logs8))
+    logs9: list[str] = []
+    out9 = tmp / "empty_mix.pack"
+    module.strip_pack(str(src3), str(out9), ["AndroidBuild", "WindowsBuild"], translate, logs9.append)
+    data9 = json.loads(out9.read_text(encoding="utf-8"))
+    r.check("空值平台不会被保留进剥离结果", set(data9) == {"WindowsBuild"})
+    logs10: list[str] = []
+    module.analyze_pack(str(src3), translate, logs10.append)
+    r.check("包信息不把空值平台计为存在",
+            sum("build_present" in x for x in logs10) == 1 and sum("build_absent" in x for x in logs10) == 3)
+
+
+def test_translation_key_filtering(tmp: Path, r: Result) -> None:
+    print("\n=== 2d. 提取文本过滤：翻译 key 不进提取/写回 ===")
+    spec = importlib.util.spec_from_file_location("gui_filter", BUILD_KIT / "sfs_pack_tool_gui.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    trees = [
+        # plainText=0：TranslationVariable key 引用，绝不能提取/汉化
+        {"displayName": {"TranslatableName": "Six_Wide_Parts", "plainText": 0},
+         "description": {"TranslatableName": "Frontier_Engine_Description", "plainText": 0}},
+        # plainText=1：直显文本，可以提取
+        {"displayName": {"TranslatableName": "My Cool Engine", "plainText": 1}},
+        # 任意字段撞上官方 SFS key 的串，同样过滤
+        {"Title": "Ten_Wide_Parts"},
+        # 正常文本保留
+        {"Title": "Super Fuel Tank"},
+    ]
+
+    class _O:
+        type = type("T", (), {"name": "MonoBehaviour"})()
+
+        def __init__(self, idx, tree):
+            self._idx = idx
+            self._tree = tree
+            self.saved = None
+
+        def read_typetree(self):
+            return self._tree
+
+        def save_typetree(self, tree):
+            self.saved = tree
+
+    class _FakeFile:
+        @staticmethod
+        def save(packer=None):
+            return b"ZZZZ"
+
+    class _Env:
+        def __init__(self, objs):
+            self.objects = objs
+            self.file = _FakeFile()
+
+    class _FakeUnityPy:
+        @staticmethod
+        def load(_payload):
+            return _Env([_O(i, t) for i, t in enumerate(trees)])
+
+    module.UnityPy = _FakeUnityPy
+    translate = lambda key, **kw: key  # noqa: E731
+    src = tmp / "kf.pack"
+    write(src, json.dumps({"WindowsBuild": "AAAA"}))
+
+    # 基础 sanity：官方 key 集里有用户点名的几个
+    for k in ("Six_Wide_Parts", "Ten_Wide_Parts", "Frontier_Engine_Name"):
+        r.check(f"官方 key 集包含 {k}", k in module.OFFICIAL_LOC_KEYS)
+
+    # ---- 提取过滤 ----
+    logs: list[str] = []
+    out = tmp / "texts.json"
+    module.extract_texts(str(src), str(out), translate, logs.append)
+    table = json.loads(out.read_text(encoding="utf-8"))
+    r.check("plainText=0 的 TranslatableName 不进提取表",
+            "Six_Wide_Parts" not in table and "Frontier_Engine_Description" not in table)
+    r.check("撞官方 key 的显示字段也不进提取表", "Ten_Wide_Parts" not in table)
+    r.check("plainText=1 的直显文本正常提取", "My Cool Engine" in table)
+    r.check("普通文本正常提取", "Super Fuel Tank" in table)
+
+    # ---- 写回防护：老版本 JSON 混入的官方 key 不写回 pack ----
+    tr = tmp / "tr.json"
+    write(tr, json.dumps({"Six_Wide_Parts": "六宽", "My Cool Engine": "我的酷炫引擎"}))
+    logs2: list[str] = []
+    module.write_translation(str(src), str(tr), "", translate, logs2.append)
+    cn = tmp / "kf-CN.pack"
+    r.check("写回已产出 -CN 包", cn.is_file())
+    # 重新用同一套 fake 环境回放校验写回结果
+    saved_trees = []
+    env_objs = [_O(i, t) for i, t in enumerate(trees)]
+
+    class _Env2:
+        def __init__(self, objs):
+            self.objects = objs
+            self.file = _FakeFile()
+
+    module.UnityPy = type("U", (), {"load": staticmethod(lambda _p: _Env2(env_objs))})
+    module.write_translation(str(src), str(tr), "", translate, logs2.append)
+    for o in env_objs:
+        if o.saved is not None:
+            saved_trees.append(o.saved)
+    hit_key = any(t["displayName"]["TranslatableName"] == "六宽" for t in saved_trees
+                  if isinstance(t, dict) and isinstance(t.get("displayName"), dict))
+    hit_plain = any(t["displayName"]["TranslatableName"] == "我的酷炫引擎" for t in saved_trees
+                    if isinstance(t, dict) and isinstance(t.get("displayName"), dict))
+    r.check("官方 key 即使在翻译表里也不被写回", not hit_key)
+    r.check("普通文本写回不受影响", hit_plain)
+
 
 def test_toolkit_selfcheck(tmp: Path, r: Result) -> None:
     print("\n=== 3. Toolkit 前提自检 ===")
@@ -726,6 +868,7 @@ def main() -> int:
         test_export_button_wires_run_async(r)
         test_sync_asset_name_indent(tmp, r)
         test_pack_info_and_strip_guards(tmp, r)
+        test_translation_key_filtering(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)
         test_install_never_overwrites(tmp, r)

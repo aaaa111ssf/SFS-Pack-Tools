@@ -1,6 +1,6 @@
 # SFS Pack Tool — 工具介绍 / User Guide
 
-**V2.3.2** · 作者 / Author: **A Future star** · QQ 群 / Group: **923038827**
+**V2.3.3** · 作者 / Author: **A Future star** · QQ 群 / Group: **923038827**
 
 **语言 / Language：** [🇨🇳 中文](#中文) ｜ [🇬🇧 English](#english)
 

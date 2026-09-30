@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SFS Pack Tool v2.3.2."""
+"""SFS Pack Tool v2.3.3."""
 
 from __future__ import annotations
 
@@ -22,10 +22,11 @@ from tkinter import filedialog, messagebox, scrolledtext
 
 import UnityPy
 import sfs_project_exporter as prefab_exporter
+from sfs_official_keys import OFFICIAL_LOC_KEYS
 
 DEFAULT_AUTHOR = "〈A Future star汉化〉"
-VERSION = "2.3.2"
-VERSION_TITLE = "V2.3.2"
+VERSION = "2.3.3"
+VERSION_TITLE = "V2.3.3"
 EXCLUDE_WORDS = {
     "Color_Gray", "Toggle", "width", "target_state", "tank", "height", "DeployParachute",
     "Landing_Leg_Expanded", "Basic_Parts", "Color_Black", "Color_White", "Flat Smooth 4",
@@ -61,7 +62,7 @@ PLATFORM_NAMES = {
 PLATFORM_LABELS = {name: key for key, name in PLATFORM_NAMES.items()}
 TEXT = {
     "zh": {
-        "window": "SFS Pack Tool V2.3.2 - Localization & Unity Export-by A Future star",
+        "window": "SFS Pack Tool V2.3.3 - Localization & Unity Export-by A Future star",
         "title": "SFS Pack Tool " + VERSION_TITLE,
         "subtitle": "汉化写入 · Prefab · 贴图 · Unity 工程导出 · 免挂提取",
         "language": "语言",
@@ -71,6 +72,9 @@ TEXT = {
         "select_pack": "选择原始 mod.pack",
         "select_translation": "选择翻译 JSON",
         "no_pack": "尚未选择 mod.pack",
+        "translation_none": "翻译 JSON：尚未选择",
+        "translation_selected_label": "翻译 JSON：{name}",
+        "clear_log": "清空日志",
         "translator_frame": "汉化处理",
         "author": "汉化作者标识",
         "extract": "提取待翻译文本",
@@ -111,11 +115,9 @@ TEXT = {
         "install_nothing": "[安装] 没有新文件需要写入 Toolkit",
         "install_replaced_stale": "[安装] 已替换 {n} 个 GUID 过期的同名残留(上一轮导入留下的旧版本占位 会让贴图/材质挂空) 原文件已备份到 {path}",
         "install_repair_done": "[安装] 已修复 {n} 个引用悬空的既有资产 原文件已备份到 {path}",
-        "repair_toolkit_btn": "修复 Toolkit 空壳着色器·悬空引用",
         "repair_start": "开始清理 Toolkit 里残留的 AssetRipper 空壳着色器(零件渲成黑板的根因)...",
         "repair_done": "[修复] 已删除 {stubs} 个空壳着色器 重写 {refs} 处材质引用 同步 {names} 个资产名 备份于 {backup}",
         "repair_none": "[修复] 没发现空壳着色器 Toolkit 已是干净的",
-        "repair_need_tk": "请先填写 Modding Toolkit 路径",
         "repair_dangling_none": "[悬空] 未发现悬空引用 Toolkit 已是干净的",
         "repair_dangling_scan": "[悬空] 扫描到 {n} 处悬空引用",
         "repair_dangling_redirected": "[悬空] 已按同名重定向 {n} 处",
@@ -123,7 +125,6 @@ TEXT = {
         "repair_dangling_unresolved": "[悬空] 无法自动修复 {n} 处 清单见 {path}",
         "repair_dangling_nopkg": "[悬空] 未提供原始 mod 工程目录 仅扫描+清单 如需自动修复请填写原始 mod 工程目录",
         "repair_dangling_clean": "[修复] 悬空引用：重定向 {redirected} 处 补入 {imported} 个 未解决 {unresolved} 处",
-        "package_dir_label": "原始 mod 工程目录(可选 用于按名修复悬空引用)",
         "select_package": "选择",
         "selected_pack": "已选择源文件 {name}",
         "selected_translation": "已选择翻译文件 {name}",
@@ -143,12 +144,17 @@ TEXT = {
         "output_failed": "❌ 输出失败 {error}",
         "processing_failed": "❌ 处理失败 {error}",
         "strip_frame": "剥离 / 精简工具",
-        "strip_hint": "剥离 = 只保留目标平台 Build 与 CodeAssembly 删除其他平台 大幅减小 .pack 体积",
-        "target_platform": "目标平台",
+        "strip_hint": "剥离 = 只保留勾选平台的 Build 与 CodeAssembly 删除其他平台 大幅减小 .pack 体积\n剥离前会先扫描包信息 确保结果至少保留一个平台",
+        "target_platform": "保留平台(可多选)",
         "select_strip_output": "输出位置",
         "pick_strip_output": "选择位置",
         "analyze": "包信息",
-        "strip": "剥离到目标平台",
+        "strip": "剥离到所选平台",
+        "strip_scan_header": "[剥离] 已扫描包信息 包内平台 {builds} 个：{list}",
+        "strip_scan_plat": "    {plat} {size}",
+        "strip_missing_warn": "[剥离] [!] 所选平台 {missing} 不在包内 已忽略 只保留 {kept}",
+        "strip_no_target": "❌ 所选平台 {wanted} 都不在此 .pack 里 包内平台：{present} 无法剥离 请先用 包信息 确认",
+        "strip_none_selected": "❌ 请至少勾选一个要保留的平台",
         "analyzing": "正在分析包信息...",
         "pack_size": "  包文件 {content} ({size})",
         "assembly": "    CodeAssembly {size}",
@@ -156,7 +162,6 @@ TEXT = {
         "build_present": "    {plat} 解压后约 {size} {parts} 个部件",
         "build_absent": "   {plat} 未包含",
         "analyze_done": "✔ 包信息完成 共 {builds} 个平台 {parts} 个部件 解压共 {total}",
-        "strip_no_target": "❌ 该 .pack 里没有 {plat} 平台的数据 无法剥离 请先用 包信息 确认包含哪些平台",
         "strip_output_is_input": "❌ 剥离输出不能就是源 .pack 会直接覆盖原模组 请另选一个路径",
         "strip_output_set": "剥离输出 {path}",
         "strip_no_pack": "❌ 未选择 mod.pack",
@@ -167,7 +172,6 @@ TEXT = {
         "strip_keep": "  保留 {plat}",
         "strip_done": "✔ 剥离完成 {out} {size}",
         "strip_fail": "❌ 剥离失败 {error}",
-        "pick_projects": "选择工程目录 (Toolkit + 原始mod)",
         "menu_tutorial": "教程",
         "menu_tutorial_open": "打开使用教程 (HTML)",
         "menu_author": "关于作者",
@@ -202,7 +206,7 @@ TEXT = {
         "about_author_text": "作者：A Future star(汉化)\n本工具由 A Future star 汉化并维护，用于降低 SFS mod 制作门槛。\n如有问题或建议，欢迎加入 QQ 群交流。",
     },
     "en": {
-        "window": "SFS Pack Tool V2.3.2 - Localization & Unity Export-by A Future star",
+        "window": "SFS Pack Tool V2.3.3 - Localization & Unity Export-by A Future star",
         "title": "SFS Pack Tool " + VERSION_TITLE,
         "subtitle": "Localization · Prefab · Textures · Unity Export · Keep-alive extraction",
         "language": "Language:",
@@ -212,6 +216,9 @@ TEXT = {
         "select_pack": "Select source mod.pack",
         "select_translation": "Select translation JSON",
         "no_pack": "No mod.pack selected",
+        "translation_none": "Translation JSON: none selected",
+        "translation_selected_label": "Translation JSON: {name}",
+        "clear_log": "Clear log",
         "translator_frame": "Localization",
         "author": "Translator signature:",
         "extract": "Extract translatable text",
@@ -241,11 +248,9 @@ TEXT = {
         "install_nothing": "[Install] No new files need to be written to the Toolkit",
         "install_replaced_stale": "[Install] Replaced {n} same-named leftovers with stale GUIDs (old versions occupying the slot cause missing textures/materials); originals backed up to {path}",
         "install_repair_done": "[Install] Repaired {n} existing assets with dangling refs; originals backed up to {path}",
-        "repair_toolkit_btn": "Repair Toolkit stub shaders (black parts)",
         "repair_start": "Cleaning leftover AssetRipper stub shaders in the Toolkit (the cause of black parts)...",
         "repair_done": "[Repair] Deleted {stubs} stub shaders, rewrote {refs} material refs, synced {names} asset names. Backup at {backup}",
         "repair_none": "[Repair] No stub shaders found; the Toolkit is clean.",
-        "repair_need_tk": "Please set the Modding Toolkit path first.",
         "repair_dangling_none": "[Dangling] No dangling references found; the Toolkit is clean.",
         "repair_dangling_scan": "[Dangling] Scanned {n} dangling references",
         "repair_dangling_redirected": "[Dangling] Redirected {n} references by name",
@@ -253,7 +258,6 @@ TEXT = {
         "repair_dangling_unresolved": "[Dangling] {n} references could not be auto-fixed; manifest at {path}",
         "repair_dangling_nopkg": "[Dangling] No original mod project dir provided; scan+manifest only. To auto-fix, fill the original mod project dir.",
         "repair_dangling_clean": "[Repair] Dangling refs: redirected {redirected}, imported {imported}, unresolved {unresolved}",
-        "package_dir_label": "Original mod project dir (optional; for name-based dangling repair)",
         "select_package": "Select",
         "install_failed": "[Install] Failed to write into the Toolkit: {error}",
         "selected_pack": "Source selected: {name}",
@@ -284,12 +288,17 @@ TEXT = {
         "output_failed": "❌ Output failed: {error}",
         "processing_failed": "❌ Processing failed: {error}",
         "strip_frame": "Strip / Slim Tool",
-        "strip_hint": "Strip = keep only the target platform Build and CodeAssembly, remove other platforms to greatly reduce .pack size.",
-        "target_platform": "Target platform:",
+        "strip_hint": "Strip = keep only the checked platform Builds and CodeAssembly, remove other platforms to greatly reduce .pack size.\nThe pack is scanned first to guarantee at least one platform remains.",
+        "target_platform": "Platforms to keep (multi-select):",
         "select_strip_output": "Output location:",
         "pick_strip_output": "Choose location",
         "analyze": "Pack info",
-        "strip": "Strip to target platform",
+        "strip": "Strip to selected platforms",
+        "strip_scan_header": "[Strip] Pack scanned: {builds} platform(s): {list}",
+        "strip_scan_plat": "    {plat}: {size}",
+        "strip_missing_warn": "[Strip] [!] Selected platforms {missing} are not in the pack; keeping {kept} only.",
+        "strip_no_target": "❌ None of the selected platforms ({wanted}) are in this .pack. Pack contains: {present}. Run Pack info first.",
+        "strip_none_selected": "❌ Check at least one platform to keep.",
         "analyzing": "Analyzing pack info...",
         "pack_size": "  Pack file: {content} ({size})",
         "assembly": "    CodeAssembly: {size}",
@@ -297,7 +306,6 @@ TEXT = {
         "build_present": "    {plat}: ~{size} decompressed, {parts} parts",
         "build_absent": "   {plat}: not included",
         "analyze_done": "✔ Pack info done: {builds} platforms, {parts} parts, ~{total} decompressed",
-        "strip_no_target": "❌ This .pack has no {plat} data to strip. Run Pack info first to see which platforms it contains.",
         "strip_output_is_input": "❌ Strip output cannot be the source .pack (it would overwrite the original mod). Pick another path.",
         "strip_output_set": "Strip output: {path}",
         "strip_no_pack": "❌ No mod.pack selected",
@@ -308,7 +316,6 @@ TEXT = {
         "strip_keep": "  Kept {plat}",
         "strip_done": "✔ Strip done: {out} ({size})",
         "strip_fail": "❌ Strip failed: {error}",
-        "pick_projects": "Select project dirs (Toolkit + original mod)",
         "tutorial_missing": "tutorial.html not found; make sure it sits next to this program",
         "menu_tutorial": "Tutorial",
         "menu_tutorial_open": "Open usage tutorial (HTML)",
@@ -548,7 +555,7 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
-APP_USER_MODEL_ID = "AFuturestar.SFSPackTool.2.3.2"
+APP_USER_MODEL_ID = "AFuturestar.SFSPackTool.2.3.3"
 _WM_SETICON = 0x0080
 _IMAGE_ICON = 1
 _LR_LOADFROMFILE = 0x00000010
@@ -692,6 +699,19 @@ def is_candidate_text(text: object, path: str) -> bool:
     return leaf not in DISPLAY_LEAF_FIELDS and leaf not in INTERNAL_LEAF_FIELDS
 
 
+def is_plain_text(parent: object) -> bool:
+    """TranslationVariable 结构里 plainText 是否为真。
+
+    游戏源码 SFS.Translations.TranslationVariable：plainText=0 时
+    TranslatableName 是按 key 查 Loc.fields 的翻译标识符（查不到会显示 NULL），
+    只有 plainText=1 时才是直显文本、可安全汉化。parent 里没有 plainText
+    字段时按 C# 默认值 false 处理（即视为 key，宁可不翻，不可翻坏）。
+    """
+    if not isinstance(parent, dict):
+        return False
+    return bool(parent.get("plainText"))
+
+
 def recursive_walk(node: object, path: str, callback) -> None:
     if isinstance(node, dict):
         for key, value in node.items():
@@ -737,6 +757,12 @@ def extract_texts(input_file: str, output_file: str, translate, log) -> None:
                     if tree is not None:
 
                         def collect(parent, key, value, path) -> None:
+                            # 翻译 key 过滤：TranslatableName 且 plainText=0 的是游戏查表用的 key
+                            if key == "TranslatableName" and not is_plain_text(parent):
+                                return
+                            # 官方翻译 key 过滤：与 SFS_Translation.cs 里的 key 撞名的串绝不能汉化
+                            if value in OFFICIAL_LOC_KEYS:
+                                return
                             if is_display_text(value, path):
                                 texts.add(value)
                             elif is_candidate_text(value, path):
@@ -805,7 +831,10 @@ def write_translation(input_file: str, translation_file: str, author: str, trans
                                     if author and author not in node[key]:
                                         node[key] = node[key] + author
                                         changed += 1
-                                elif not is_exclude_word(value) and value in translations:
+                                elif (not is_exclude_word(value) and value in translations
+                                      and value not in OFFICIAL_LOC_KEYS):
+                                    # 官方翻译 key 不写回：老版本提取的 JSON 可能混入，
+                                    # 写回去游戏查表失败会显示 NULL
                                     node[key] = translations[value]
                                     changed += 1
                             elif isinstance(value, (dict, list)):
@@ -813,7 +842,8 @@ def write_translation(input_file: str, translation_file: str, author: str, trans
                     elif isinstance(node, list):
                         for index, value in enumerate(node):
                             child = f"{path}[{index}]"
-                            if isinstance(value, str) and not is_exclude_word(value) and value in translations:
+                            if (isinstance(value, str) and not is_exclude_word(value)
+                                    and value in translations and value not in OFFICIAL_LOC_KEYS):
                                 node[index] = translations[value]
                                 changed += 1
                             elif isinstance(value, (dict, list)):
@@ -848,13 +878,19 @@ def human_size(num: float) -> str:
 
 
 def decode_build_payload(build_value: object) -> bytes | None:
-    """从 .pack 的某个平台 Build 字段解码 UnityFS 字节流。"""
+    """从 .pack 的某个平台 Build 字段解码 UnityFS 字节流。
+
+    空串/纯空白也按"不存在"处理：b64decode("") 会返回 b"" 而不是报错，
+    若把空值平台当"存在"保留，剥出来的包会带一个游戏加载不了的空平台块
+    （实测有些包的字段就存在但值为空，如 CodeAssembly）。
+    """
     if not isinstance(build_value, str):
         return None
     try:
-        return base64.b64decode(build_value)
+        payload = base64.b64decode(build_value)
     except (ValueError, TypeError):
         return None
+    return payload if payload else None
 
 
 def count_bundle_parts(payload: bytes) -> int:
@@ -932,24 +968,48 @@ def analyze_pack(input_file: str, translate, log) -> None:
     log(translate("analyze_done", builds=build_count, parts=part_total, total=human_size(total)))
 
 
-def strip_pack(input_file: str, output_file: str, platform_key: str, translate, log) -> None:
-    """剥离到目标平台：只保留 platform_key 与 CodeAssembly，删除其他平台 Build。"""
+def strip_pack(input_file: str, output_file: str, platform_keys, translate, log) -> None:
+    """剥离到目标平台：只保留 platform_keys 中的平台与 CodeAssembly，删除其他平台 Build。
+
+    剥离前先扫描包信息（剥离校验）：
+    • 所选平台全都不在包里 → 直接拒绝，绝不写出一个不含任何平台的 .pack；
+    • 部分不在包里 → 警告并只保留实有的平台；
+    • 结果至少保留一个平台 + CodeAssembly。
+    """
     if not input_file:
         log(translate("strip_no_pack"))
         return
-    if platform_key not in PLATFORM_KEYS:
-        log(translate("strip_fail", error=f"无效平台 {platform_key}"))
+    if isinstance(platform_keys, str):
+        platform_keys = [platform_keys]
+    wanted = [k for k in BUILD_ORDER if k in set(platform_keys)]
+    if not wanted:
+        log(translate("strip_fail", error="未指定任何有效平台"))
         return
     try:
         data = json.loads(Path(input_file).read_text(encoding="utf-8-sig"))
     except Exception as exc:
         log(translate("strip_read_fail", error=exc))
         return
-    # 目标平台压根不在包里时，直接放弃：否则会写出一个只有 CodeAssembly、
-    # 游戏根本加载不了的 .pack，而界面上还显示“剥离完成”。
-    if decode_build_payload(data.get(platform_key)) is None:
-        log(translate("strip_no_target", plat=PLATFORM_NAMES.get(platform_key, platform_key)))
+    # ---- 剥离前扫描：包内实有平台与体积 ----
+    present = [k for k in BUILD_ORDER if decode_build_payload(data.get(k)) is not None]
+    present_txt = "、".join(PLATFORM_NAMES.get(k, k) for k in present) if present else "无"
+    log(translate("strip_scan_header", builds=len(present), list=present_txt))
+    for key in present:
+        payload = decode_build_payload(data.get(key))
+        log(translate("strip_scan_plat", plat=PLATFORM_NAMES.get(key, key), size=human_size(len(payload))))
+    # ---- 校验：保证剥离结果至少包含一个平台 ----
+    keep = [k for k in wanted if k in present]
+    if not keep:
+        # 所选平台全都不在包里时，直接放弃：否则会写出一个只有 CodeAssembly、
+        # 游戏根本加载不了的 .pack，而界面上还显示“剥离完成”。
+        wanted_txt = "、".join(PLATFORM_NAMES.get(k, k) for k in wanted)
+        log(translate("strip_no_target", wanted=wanted_txt, present=present_txt))
         return
+    missing = [k for k in wanted if k not in present]
+    if missing:
+        missing_txt = "、".join(PLATFORM_NAMES.get(k, k) for k in missing)
+        kept_txt = "、".join(PLATFORM_NAMES.get(k, k) for k in keep)
+        log(translate("strip_missing_warn", missing=missing_txt, kept=kept_txt))
     if output_file:
         try:
             if Path(output_file).resolve() == Path(input_file).resolve():
@@ -964,17 +1024,18 @@ def strip_pack(input_file: str, output_file: str, platform_key: str, translate, 
         if key == "CodeAssembly":
             kept.append(key)
             continue
-        if key in PLATFORM_KEYS and key != platform_key:
+        if key in PLATFORM_KEYS and key not in keep:
             removed.append(PLATFORM_NAMES.get(key, key))
             data.pop(key, None)
-        elif key == platform_key:
+        elif key in keep:
             kept.append(key)
     for name in removed:
         log(translate("strip_removed", plat=name))
     for name in kept:
         log(translate("strip_keep", plat=PLATFORM_NAMES.get(name, name)))
     if not output_file:
-        output_file = str(Path(input_file).with_name(f"{Path(input_file).stem}-{PLATFORM_NAMES.get(platform_key, platform_key)}.pack"))
+        suffix = "+".join(PLATFORM_NAMES.get(k, k) for k in keep)
+        output_file = str(Path(input_file).with_name(f"{Path(input_file).stem}-{suffix}.pack"))
     try:
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
         Path(output_file).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -997,21 +1058,73 @@ class App:
         self.package_dir_var = tk.StringVar(value=self.settings.get("package_dir", ""))
         self.extract_output_var = tk.StringVar(value=self.settings.get("extract_output", ""))
         self.strip_output_var = tk.StringVar(value=self.settings.get("strip_output", ""))
-        self.platform_var = tk.StringVar(value=PLATFORM_NAMES.get(self.settings.get("strip_platform", "WindowsBuild"), "Windows"))
+        # 剥离保留平台：多选。兼容旧版单选设置 strip_platform
+        saved_platforms = self.settings.get("strip_platforms")
+        if not isinstance(saved_platforms, list) or not saved_platforms:
+            legacy = self.settings.get("strip_platform", "WindowsBuild")
+            saved_platforms = [legacy] if legacy in PLATFORM_KEYS else ["WindowsBuild"]
+        self.strip_platform_vars = {key: tk.BooleanVar(value=key in saved_platforms) for key in PLATFORM_KEYS}
         self.install_var = tk.BooleanVar(value=bool(self.settings.get("install_to_toolkit", False)))
         self.language_var = tk.StringVar()
+        # 剥离输出自动命名：勾选平台变化时自动刷新（用户手选过路径就不再动）
+        self._strip_auto_name = ""
         set_window_icon(self.root)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.build_ui()
 
     def t(self, key: str, **kwargs) -> str:
         return TEXT[self.locale][key].format(**kwargs)
 
+    def _translation_label_text(self) -> str:
+        if self.translation_file:
+            return self.t("translation_selected_label", name=Path(self.translation_file).name)
+        return self.t("translation_none")
+
+    def _on_close(self) -> None:
+        """关窗时记住窗口大小与位置，下次启动还原。"""
+        try:
+            geo = self.root.geometry()
+            if re.match(r"^\d{3,}x\d{3,}", geo):
+                self.settings["geometry"] = geo
+            self.save_user_settings()
+        finally:
+            self.root.destroy()
+
+    def _on_platform_toggle(self) -> None:
+        """勾选平台变化：保存设置；若剥离输出还是自动命名，就跟着刷新默认名。"""
+        self.save_user_settings()
+        if not self.input_file:
+            return
+        cur = self.strip_output_var.get().strip()
+        if not cur or cur == self._strip_auto_name:
+            new = str(Path(self.input_file).with_name(self.default_strip_output_name()))
+            self.strip_output_var.set(new)
+            self._strip_auto_name = new
+
+    def _clear_log(self) -> None:
+        self.logs.clear()
+        self.refresh_logs()
+
+    def selected_strip_platforms(self) -> list[str]:
+        """勾选中的保留平台（按 BUILD_ORDER 稳定排序）。"""
+        return [key for key in PLATFORM_KEYS if self.strip_platform_vars[key].get()]
+
+    def default_strip_output_name(self) -> str:
+        """按勾选平台生成默认输出文件名后缀，如 -Windows+Android.pack。"""
+        keys = self.selected_strip_platforms() or ["WindowsBuild"]
+        return "-".join([Path(self.input_file).stem] + [PLATFORM_NAMES.get(k, k) for k in keys]) + ".pack"
+
     def build_ui(self) -> None:
         for child in self.root.winfo_children():
             child.destroy()
         self.root.title(self.t("window"))
-        self.root.geometry("920x770")
-        self.root.minsize(840, 680)
+        # 恢复上次关窗时的窗口大小与位置；没有记录（或记录无效）时用默认尺寸
+        saved_geo = self.settings.get("geometry")
+        if isinstance(saved_geo, str) and re.match(r"^\d{3,}x\d{3,}([+-]\d+){1,2}$", saved_geo):
+            self.root.geometry(saved_geo)
+        else:
+            self.root.geometry("1080x900")
+        self.root.minsize(960, 800)
         self.language_var.set(self.t("chinese") if self.locale == "zh" else self.t("english"))
 
         header = tk.Frame(self.root)
@@ -1031,6 +1144,9 @@ class App:
         tk.Button(source, text=self.t("select_translation"), command=self.pick_translation, width=22).grid(row=0, column=1, padx=4, pady=3)
         self.input_label = tk.Label(source, text=self.input_file or self.t("no_pack"), anchor="w")
         self.input_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
+        # 已选翻译 JSON 文件名直接显示出来，不用翻日志确认
+        self.translation_label = tk.Label(source, text=self._translation_label_text(), fg="#555555", anchor="w")
+        self.translation_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
         source.columnconfigure(1, weight=1)
 
         translate_frame = tk.LabelFrame(self.root, text=self.t("translator_frame"), padx=8, pady=6)
@@ -1048,26 +1164,28 @@ class App:
         export.pack(fill="x", padx=12, pady=4)
         tk.Label(export, text=self.t("toolkit_dir")).grid(row=0, column=0, sticky="w")
         tk.Entry(export, textvariable=self.toolkit_dir_var).grid(row=0, column=1, sticky="ew", padx=5)
+        # 浏览按钮：弹目录选择框选 Modding Toolkit 工程根（自动上溯校正）
+        tk.Button(export, text=self.t("select_toolkit"), command=self.pick_toolkit_dir, width=14)\
+            .grid(row=0, column=2, padx=3)
         tk.Label(export, text=self.t("builtin_ripper_hint"), fg="#555555", wraplength=650, justify="left").grid(row=1, column=1, columnspan=2, sticky="w", padx=5)
         tk.Label(export, text=self.t("toolkit_hint"), fg="#555555", wraplength=650, justify="left").grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
         tk.Checkbutton(export, text=self.t("install_opt"), variable=self.install_var,
                        command=self.save_user_settings, anchor="w", justify="left").grid(row=3, column=1, sticky="w", padx=5, pady=(7, 0))
         self.export_btn = tk.Button(export, text=self.t("export"), command=self.start_export, bg="#e6f7ff", width=14)
         self.export_btn.grid(row=3, column=2, padx=3, pady=(7, 0))
-        tk.Button(export, text=self.t("repair_toolkit_btn"), command=self.start_repair_toolkit, bg="#fff3bf", width=24)\
-            .grid(row=4, column=1, columnspan=2, sticky="w", padx=5, pady=(7, 0))
-        tk.Label(export, text=self.t("package_dir_label")).grid(row=5, column=0, sticky="w", pady=(7, 0))
-        tk.Entry(export, textvariable=self.package_dir_var).grid(row=5, column=1, sticky="ew", padx=5, pady=(7, 0))
-        # 合并：Toolkit 路径与原始 mod 工程目录合成一个按钮，一次选完两个
-        tk.Button(export, text=self.t("pick_projects"), command=self.pick_project_dirs, width=32)\
-            .grid(row=6, column=1, columnspan=2, sticky="w", padx=5, pady=(7, 0))
+        # 独立的「修复 Toolkit 空壳着色器·悬空引用」按钮已删除（冗余入口）：
+        # 空壳着色器清理与悬空引用自愈由一键导出工程自动完成（repair_toolkit）
         export.columnconfigure(1, weight=1)
 
         strip = tk.LabelFrame(self.root, text=self.t("strip_frame"), padx=8, pady=8)
         strip.pack(fill="x", padx=12, pady=4)
         tk.Label(strip, text=self.t("strip_hint"), fg="#555555", wraplength=820, justify="left").grid(row=0, column=0, columnspan=4, sticky="w", padx=2)
         tk.Label(strip, text=self.t("target_platform")).grid(row=1, column=0, sticky="w", pady=(7, 0))
-        tk.OptionMenu(strip, self.platform_var, *PLATFORM_NAMES.values()).grid(row=1, column=1, sticky="w", padx=5, pady=(7, 0))
+        plat_box = tk.Frame(strip)
+        plat_box.grid(row=1, column=1, sticky="w", padx=5, pady=(7, 0))
+        for _key in PLATFORM_KEYS:
+            tk.Checkbutton(plat_box, text=PLATFORM_NAMES[_key], variable=self.strip_platform_vars[_key],
+                           command=self._on_platform_toggle).pack(side="left")
         tk.Button(strip, text=self.t("analyze"), command=lambda: self.run_async(lambda log: analyze_pack(self.input_file, self.t, log)), width=14).grid(row=1, column=2, padx=4, pady=(7, 0))
         tk.Button(strip, text=self.t("strip"), command=self.start_strip, bg="#ffe9d6", width=20).grid(row=1, column=3, padx=4, pady=(7, 0))
         tk.Label(strip, text=self.t("select_strip_output")).grid(row=2, column=0, sticky="w", pady=(7, 0))
@@ -1075,8 +1193,12 @@ class App:
         tk.Button(strip, text=self.t("pick_strip_output"), command=self.pick_strip_output, width=14).grid(row=2, column=3, padx=4, pady=(7, 0))
         strip.columnconfigure(1, weight=1)
 
+        # 日志栏顶部的工具条：清空日志按钮靠右
+        log_bar = tk.Frame(self.root)
+        log_bar.pack(fill="x", padx=12, pady=(6, 0))
+        tk.Button(log_bar, text=self.t("clear_log"), command=self._clear_log, width=10).pack(side="right")
         self.log_widget = scrolledtext.ScrolledText(self.root, font=("Consolas", 10), height=16, state="disabled")
-        self.log_widget.pack(fill="both", expand=True, padx=12, pady=(8, 12))
+        self.log_widget.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         if not self.logs:
             self.logs.append(self.t("ready"))
         self.refresh_logs()
@@ -1102,8 +1224,11 @@ class App:
             "package_dir": self.package_dir_var.get().strip(),
             "extract_output": self.extract_output_var.get().strip(),
             "strip_output": self.strip_output_var.get().strip(),
-            "strip_platform": PLATFORM_LABELS.get(self.platform_var.get(), "WindowsBuild"),
+            "strip_platforms": self.selected_strip_platforms(),
+            "strip_platform": (self.selected_strip_platforms() or ["WindowsBuild"])[0],
             "install_to_toolkit": bool(self.install_var.get()),
+            # 窗口大小/位置只在关窗时更新（_on_close），这里原样保留不丢
+            "geometry": self.settings.get("geometry", ""),
         })
 
     def log(self, message: str) -> None:
@@ -1140,14 +1265,19 @@ class App:
         self.input_label.configure(text=path)
         if not self.extract_output_var.get().strip():
             self.extract_output_var.set(str(Path(path).with_name("texts_to_translate.json")))
-        if not self.strip_output_var.get().strip():
-            self.strip_output_var.set(str(Path(path).with_name(f"{Path(path).stem}-{self.platform_var.get()}.pack")))
+        cur_strip = self.strip_output_var.get().strip()
+        if not cur_strip or cur_strip == self._strip_auto_name:
+            new_strip = str(Path(path).with_name(self.default_strip_output_name()))
+            self.strip_output_var.set(new_strip)
+            self._strip_auto_name = new_strip
         self.log(self.t("selected_pack", name=Path(path).name))
 
     def pick_translation(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("JSON", "*.json"), ("All files", "*.*")])
         if path:
             self.translation_file = path
+            if hasattr(self, "translation_label"):
+                self.translation_label.configure(text=self._translation_label_text())
             self.log(self.t("selected_translation", name=Path(path).name))
 
     def pick_extract_output(self) -> None:
@@ -1173,29 +1303,7 @@ class App:
                 path = str(resolved)
             self.toolkit_dir_var.set(path)
             self.save_user_settings()
-
-    def pick_package_dir(self) -> None:
-        path = filedialog.askdirectory(title=self.t("package_dir_label"))
-        if path:
-            self.package_dir_var.set(path)
-            self.save_user_settings()
             self.log(self.t("selected_toolkit", path=path))
-
-    def pick_project_dirs(self) -> None:
-        """合并按钮：一次选完 Modding Toolkit 路径与原始 mod 工程目录。"""
-        tk_dir = filedialog.askdirectory(title=self.t("select_toolkit"))
-        if not tk_dir:
-            return
-        resolved = resolve_toolkit_root(tk_dir)
-        if resolved is not None and str(resolved) != str(Path(tk_dir).resolve()):
-            self.log(self.t("toolkit_root_fixed", path=str(resolved)))
-            tk_dir = str(resolved)
-        self.toolkit_dir_var.set(tk_dir)
-        pk_dir = filedialog.askdirectory(title=self.t("package_dir_label"))
-        if pk_dir:
-            self.package_dir_var.set(pk_dir)
-        self.save_user_settings()
-        self.log(self.t("selected_toolkit", path=tk_dir))
 
     def build_menubar(self) -> None:
         menubar = tk.Menu(self.root)
@@ -1254,7 +1362,7 @@ class App:
 
     def pick_strip_output(self) -> None:
         if self.input_file:
-            default_name = f"{Path(self.input_file).stem}-{self.platform_var.get()}.pack"
+            default_name = self.default_strip_output_name()
         else:
             default_name = "stripped.pack"
         path = filedialog.asksaveasfilename(
@@ -1273,12 +1381,15 @@ class App:
         if not self.input_file:
             messagebox.showwarning(self.t("no_pack_title"), self.t("strip_no_pack"))
             return
-        platform_key = PLATFORM_LABELS.get(self.platform_var.get(), "WindowsBuild")
+        keys = self.selected_strip_platforms()
+        if not keys:
+            messagebox.showwarning(self.t("no_pack_title"), self.t("strip_none_selected"))
+            return
         output = self.strip_output_var.get().strip()
         if not output:
-            output = str(Path(self.input_file).with_name(f"{Path(self.input_file).stem}-{PLATFORM_NAMES.get(platform_key, platform_key)}.pack"))
+            output = str(Path(self.input_file).with_name(self.default_strip_output_name()))
         self.save_user_settings()
-        self.run_async(lambda log: strip_pack(self.input_file, output, platform_key, self.t, log))
+        self.run_async(lambda log: strip_pack(self.input_file, output, keys, self.t, log))
 
     def start_export(self) -> None:
         if getattr(self, "_export_busy", False):
@@ -1325,19 +1436,6 @@ class App:
                 self.export_btn.configure(state="normal", text=self.t("export"))
 
         self.run_async(_run)
-
-    def start_repair_toolkit(self) -> None:
-        """按钮：清理 Toolkit 里残留的 AssetRipper 空壳着色器（黑板根因）。"""
-        toolkit_dir = self.toolkit_dir_var.get().strip()
-        if not toolkit_dir or not Path(toolkit_dir).is_dir():
-            messagebox.showerror(self.t("need_toolkit"), self.t("repair_need_tk"))
-            return
-        resolved = resolve_toolkit_root(toolkit_dir)
-        if resolved is None:
-            messagebox.showerror(self.t("need_toolkit_invalid"), self.t("need_toolkit_invalid_text"))
-            return
-        package_dir = self.package_dir_var.get().strip()
-        self.run_async(lambda log: self.repair_toolkit(log, str(resolved), package_dir))
 
     def repair_toolkit(self, log, toolkit_dir: str, package_dir: str = "") -> None:
         log(self.t("repair_start"))
