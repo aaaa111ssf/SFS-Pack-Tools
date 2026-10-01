@@ -197,12 +197,19 @@ def read_pack(input_path: Path) -> dict:
     return data
 
 
-def decode_pack_resources(input_path: Path, destination: Path) -> list[Path]:
-    """将 Base64 AssetBundle 和可选 CodeAssembly 写入临时目录。"""
+def decode_pack_resources(input_path: Path, destination: Path, platforms: str = "single") -> list[Path]:
+    """将 Base64 AssetBundle 和可选 CodeAssembly 写入临时目录。
+
+    platforms="single"（默认）只解码**一个平台**的 bundle（Windows 优先，缺失时按
+    Mac/Android/iOS 顺延）：四个平台包里是同一批资产的各平台序列化版本，全部解码
+    会让 AssetRipper 把每个部件导出 4 份（X / X_0 / X_1 / X_2 / X_3），工程直接翻 4 倍。
+    Toolkit 用 Windows 版本即可。platforms="all" 保留旧的整包解码行为。
+    """
     data = read_pack(input_path)
     destination.mkdir(parents=True, exist_ok=True)
     bundles: list[Path] = []
 
+    available: list[tuple[str, bytes]] = []
     for key in BUILD_KEYS:
         value = data.get(key)
         if value is None:
@@ -218,6 +225,17 @@ def decode_pack_resources(input_path: Path, destination: Path) -> list[Path]:
         if not raw.startswith(b"UnityFS"):
             log(f"[!] 跳过 {key} 解码内容不是 UnityFS AssetBundle")
             continue
+        available.append((key, raw))
+
+    if platforms == "single" and available:
+        chosen = [available[0]]
+        skipped = [k for k, _ in available[1:]]
+        if skipped:
+            log(f"[+] 单平台导出：仅解码 {chosen[0][0]}（其余 {','.join(skipped)} 平台内容相同 跳过避免重复）")
+    else:
+        chosen = available
+
+    for key, raw in chosen:
         bundle_path = destination / f"{key}.bundle"
         bundle_path.write_bytes(raw)
         bundles.append(bundle_path)
@@ -602,7 +620,7 @@ def export_prefabs(args: argparse.Namespace) -> None:
         source_dir = temporary / "decoded_pack"
         export_root = temporary / "assetripper_export"
         log_path = temporary / "assetripper.log"
-        decode_pack_resources(input_path, source_dir)
+        decode_pack_resources(input_path, source_dir, platforms=getattr(args, "platforms", "single"))
 
         port = unused_local_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -689,6 +707,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-download", action="store_true", help="未找到 AssetRipper 时不自动从官方发布页下载")
     parser.add_argument("--no-zip", action="store_true", help="仅导出目录 不额外生成 ZIP")
     parser.add_argument("--overwrite", action="store_true", help="允许覆盖已有输出目录和 ZIP")
+    parser.add_argument(
+        "--platforms", choices=["single", "all"], default="single",
+        help="解码平台 single=仅首选平台(Windows优先 默认 防止4平台部件重复) all=全部平台",
+    )
     return parser
 
 

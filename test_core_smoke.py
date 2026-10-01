@@ -1023,6 +1023,38 @@ def test_export_dedupe(tmp: Path, r: Result) -> None:
     r.check("幂等：二次去重无动作", rep2.get("removed") == 0)
 
 
+def test_single_platform_decode(tmp: Path, r: Result) -> None:
+    print("\n=== 2h. 单平台解码：防 4 平台部件重复 ===")
+    import base64
+
+    import sfs_project_exporter as pe
+
+    pack = tmp / "p.pack"
+    data = {
+        "WindowsBuild": base64.b64encode(b"UnityFS-WIN").decode(),
+        "AndroidBuild": base64.b64encode(b"UnityFS-AND").decode(),
+        "MacBuild": base64.b64encode(b"UnityFS-MAC").decode(),
+        "IOS_Build": base64.b64encode(b"UnityFS-IOS").decode(),
+    }
+    write(pack, json.dumps(data))
+
+    out_single = tmp / "single"
+    bundles = pe.decode_pack_resources(pack, out_single, platforms="single")
+    r.check("单平台只解出 1 个 bundle", len(bundles) == 1 and bundles[0].name == "WindowsBuild.bundle")
+    r.check("其余平台未落盘", not (out_single / "AndroidBuild.bundle").is_file())
+
+    out_all = tmp / "all"
+    bundles = pe.decode_pack_resources(pack, out_all, platforms="all")
+    r.check("all 模式解出 4 个 bundle", len(bundles) == 4)
+
+    # 缺首选平台时顺延：只有 IOS_Build 也能解出
+    pack2 = tmp / "p2.pack"
+    write(pack2, json.dumps({"IOS_Build": base64.b64encode(b"UnityFS-IOS").decode()}))
+    out3 = tmp / "single3"
+    bundles = pe.decode_pack_resources(pack2, out3, platforms="single")
+    r.check("首选平台缺失时顺延到可用平台", len(bundles) == 1 and bundles[0].name == "IOS_Build.bundle")
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -1042,6 +1074,7 @@ def main() -> int:
         test_resource_dup_redirect(tmp, r)
         test_generate_pack_data(tmp, r)
         test_export_dedupe(tmp, r)
+        test_single_platform_decode(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)
         test_install_never_overwrites(tmp, r)
