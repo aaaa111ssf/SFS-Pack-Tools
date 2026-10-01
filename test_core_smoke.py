@@ -853,6 +853,94 @@ def test_sync_asset_name_indent(tmp: Path, r: Result) -> None:
     r.check("多 m_Name 文件被跳过（不误改）", changed4 is False)
 
 
+def test_resource_dup_redirect(tmp: Path, r: Result) -> None:
+    print("\n=== 2e. 燃料副本重定向：RDEP Flow.resourceType 场景 ===")
+    import sfs_pack_core as ka
+
+    STOCK = "1" * 32
+    COPY = "2" * 32
+    COPY0 = "3" * 32
+    DIFF = "4" * 32
+    DIFFERENT = "5" * 32
+    ENGINE = "6" * 32
+
+    tk = tmp / "tk"
+    pkg = tmp / "pkg"
+    fuel_body = (
+        "%YAML 1.1\n"
+        "--- !u!114 &11400000\n"
+        "MonoBehaviour:\n"
+        "  m_Script: {fileID: 11500000, guid: caf9598b7e92587409b925237ba19f43, type: 3}\n"
+        "  m_Name: @NAME@\n"
+        "  m_EditorClassIdentifier: @ECID@\n"
+        "  displayName:\n"
+        "    TranslatableName: Liquid_Fuel\n"
+        "@PLAIN@  resourceUnit:\n"
+        "    TranslatableName: Mass_Unit\n"
+        "@PLAIN@  resourceMass: 1\n"
+        "  transferRate: 1\n"
+    )
+
+    def meta(guid):
+        return f"fileFormatVersion: 2\nguid: {guid}\n"
+
+    def fuel(name, ecid, plain, mass="1"):
+        return (fuel_body.replace("@NAME@", name).replace("@ECID@", ecid)
+                .replace("@PLAIN@", plain).replace("resourceMass: 1", "resourceMass: " + mass))
+
+    # Toolkit 原版：无 plainText 行、m_EditorClassIdentifier 有值
+    write(tk / "Fuels" / "Liquid_Fuel.asset",
+          fuel("Liquid_Fuel", "Assembly-CSharp:Parts.Modules:ResourceType", ""))
+    write(tk / "Fuels" / "Liquid_Fuel.asset.meta", meta(STOCK))
+    # Toolkit 另一个真不同的燃料（负面对照）
+    write(tk / "Fuels" / "Solid_Fuel.asset",
+          fuel("Solid_Fuel", "Assembly-CSharp:Parts.Modules:ResourceType", "", mass="7"))
+    write(tk / "Fuels" / "Solid_Fuel.asset.meta", meta(DIFFERENT))
+
+    # 包内：作者加前缀的副本（前缀与 rename_tag 无关，走渐进式剥前缀）
+    write(pkg / "Fu" / "AuthorName_Liquid_Fuel.asset",
+          fuel("AuthorName_Liquid_Fuel", "", "    plainText: 0\n"))
+    write(pkg / "Fu" / "AuthorName_Liquid_Fuel.asset.meta", meta(COPY))
+    # 包内：AssetRipper 重名导出的序号副本
+    write(pkg / "Fu" / "Liquid_Fuel_0.asset",
+          fuel("Liquid_Fuel", "", "    plainText: 0\n"))
+    write(pkg / "Fu" / "Liquid_Fuel_0.asset.meta", meta(COPY0))
+    # 包内：真改过的燃料（负面对照：resourceMass 不同，应保留并改名）
+    write(pkg / "Fu" / "Solid_Fuel.asset",
+          fuel("Solid_Fuel", "", "    plainText: 0\n", mass="9"))
+    write(pkg / "Fu" / "Solid_Fuel.asset.meta", meta(DIFF))
+    # 引用副本的 prefab
+    prefab = ("  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % COPY
+              + "  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % COPY0
+              + "  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % DIFF)
+    write(pkg / "Fu" / "Engine.prefab", prefab)
+    write(pkg / "Fu" / "Engine.prefab.meta", meta(ENGINE))
+
+    # 负面对照：包内 "Tank_0.prefab" 与 Toolkit "Tank.prefab" 内容确有差异
+    # （prefab 走严格比较，禁止模糊重定向误伤真正的变体部件）
+    write(tk / "Parts" / "Tank.prefab", "GameObject:\n  m_Name: Tank\n  hp: 1\n")
+    write(tk / "Parts" / "Tank.prefab.meta", meta("7" * 32))
+    write(pkg / "Fu" / "Tank_0.prefab", "GameObject:\n  m_Name: Tank_0\n  hp: 2\n")
+    write(pkg / "Fu" / "Tank_0.prefab.meta", meta("8" * 32))
+
+    logs: list[str] = []
+    rep = ka.remap_toolkit_duplicates(pkg, tk, log=logs.append, rename_tag="Mod")
+    r.check("前缀副本被识别为副本（渐进剥前缀）", rep["redirected"] == 2)
+    r.check("真改过的燃料被保留", any("Solid_Fuel" in x for x in rep["kept_diff"]))
+    r.check("副本文件已删除", not (pkg / "Fu" / "AuthorName_Liquid_Fuel.asset").is_file()
+            and not (pkg / "Fu" / "Liquid_Fuel_0.asset").is_file())
+    r.check("引用改指 Toolkit 原版", rep["refs"] == 2)
+    body = (pkg / "Fu" / "Engine.prefab").read_text(encoding="utf-8")
+    r.check("prefab 里 resourceType 指向原版 guid",
+            body.count("guid: " + STOCK) == 2 and "guid: " + COPY not in body
+            and "guid: " + COPY0 not in body)
+    r.check("保留的 mod 版已加前缀改名", (pkg / "Fu" / "Mod_Solid_Fuel.asset").is_file())
+    r.check("负面对照引用未动", "guid: " + DIFF in body)
+    r.check("内容不同的变体 prefab 不被模糊重定向（保留并改名）",
+            (pkg / "Fu" / "Mod_Tank_0.prefab").is_file()
+            and not (pkg / "Fu" / "Tank_0.prefab").is_file())
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -869,6 +957,7 @@ def main() -> int:
         test_sync_asset_name_indent(tmp, r)
         test_pack_info_and_strip_guards(tmp, r)
         test_translation_key_filtering(tmp, r)
+        test_resource_dup_redirect(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)
         test_install_never_overwrites(tmp, r)

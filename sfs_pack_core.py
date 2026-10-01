@@ -2199,12 +2199,26 @@ REWRITE_SUFFIXES = {".prefab", ".mat", ".asset", ".unity", ".controller", ".anim
 UNITY_BUILTIN_NULL_GUIDS = {"0000000000000000f000000000000000"}
 
 
-def _norm_asset_text(text: str) -> str:
+def _norm_asset_text(text: str, ignore_name: bool = False) -> str:
     """把 guid 值统一打码、去掉空白差异，用于判断两份资产是不是「同一个东西的副本」。
 
     注意必须连**内联引用**里的 guid 一起打码：AssetRipper 导出的那份副本，
     与 Toolkit 里原版的差别恰恰就在 `{fileID: 2800000, guid: xxx, type: 3}`
     这种内联引用上，而不是独立的 guid 行（那是 .meta 才有的）。
+
+    另外两类**无语义差异**也要抹平，否则 AssetRipper 导出的
+    ScriptableObject（如 ResourceType 燃料资产）会被误判成"mod 改过"：
+    - `m_EditorClassIdentifier:`：纯编辑器元数据，运行时类由 m_Script guid 决定
+      （两份相同，已打码），空 vs 有值不影响任何行为；
+    - `plainText: 0`：TranslationVariable 的 C# 默认值，与缺省该字段完全等价。
+    （实例：RDEP3.0.0 的 `RDEP3.0.0_Liquid_Fuel` 与 Toolkit `Liquid_Fuel` 就是
+    因此被误判不同而保留副本，导致 Flow.resourceType 指着模组私有燃料，
+    与官方油箱的燃料互不流通。）
+
+    ignore_name=True 时连 `m_Name:` 也抹平——专供「规范化名命中」的候选对：
+    模组作者给自带资源加前缀时必然连 m_Name 一起改（文件名也是 AssetRipper 按
+    m_Name 起的），名字差异已被键匹配认可，内容其余部分一致即视为副本。
+    仅在 remap 内按命中方式选用，其他调用方保持严格比较。
     """
     text = GUID_FIELD_RE.sub("guid: <G>", text.replace("\r\n", "\n"))
     out = []
@@ -2212,11 +2226,17 @@ def _norm_asset_text(text: str) -> str:
         stripped = line.strip()
         if not stripped or stripped.startswith("guid: <G>"):
             continue
+        if stripped.startswith("m_EditorClassIdentifier:"):
+            continue
+        if stripped in ("plainText: 0", "plainText: 0\r"):
+            continue
+        if ignore_name and stripped.startswith("m_Name:"):
+            continue
         out.append(stripped)
     return "\n".join(out)
 
 
-def _assets_equivalent(a: Path, b: Path) -> bool:
+def _assets_equivalent(a: Path, b: Path, ignore_name: bool = False) -> bool:
     """两份资产是否等价：二进制直接比字节；文本比"去 guid 去空白"后的内容。"""
     try:
         raw_a = a.read_bytes()
@@ -2230,13 +2250,23 @@ def _assets_equivalent(a: Path, b: Path) -> bool:
         text_b = raw_b.decode("utf-8")
     except UnicodeDecodeError:
         return False
-    return _norm_asset_text(text_a) == _norm_asset_text(text_b)
+    return _norm_asset_text(text_a, ignore_name) == _norm_asset_text(text_b, ignore_name)
 
 
 def count_dangling_refs(text: str, known_guids: set) -> int:
     """数一份资产文本里有多少处 guid 引用在 known_guids 里找不到（即悬空引用）。"""
     return sum(1 for g in GUID_FIELD_RE.findall(text)
                if g.lower() not in known_guids and g.lower() not in UNITY_BUILTIN_NULL_GUIDS)
+
+
+def _norm_asset_key(stem: str) -> str:
+    """资产文件名的规范化键：小写 + 去掉结尾的 _0/_1 序号后缀。
+
+    用于副本匹配：AssetRipper 对重名资产会导出成 `X_0.asset`，模组作者也常
+    给自带资源加 `模组名_` 前缀（如 `RDEP3.0.0_Liquid_Fuel`），这些"皮"不同
+    的同名资源，等价性判定通过后就该重定向到 Toolkit 那份。
+    """
+    return re.sub(r"_\d+$", "", stem.strip().lower())
 
 
 def remap_toolkit_duplicates(
@@ -2284,6 +2314,7 @@ def remap_toolkit_duplicates(
     #     火焰材质 6880fbc9/5f4709db 悬空的根因）。同名即视为同一份，下面的等价性判断
     #     会兜底：等价才重定向+删副本，内容不同则保留 mod 版并改名，不会误伤。
     tk_by_name: dict[str, tuple[str, Path]] = {}
+    tk_by_norm: dict[str, tuple[str, Path]] = {}
     for meta in toolkit_assets.rglob("*.meta"):
         asset = meta.with_suffix("")
         if not asset.is_file():
@@ -2297,6 +2328,8 @@ def remap_toolkit_duplicates(
             continue
         tk_by_rel[rel] = (guid, asset)
         tk_by_name.setdefault(asset.stem.lower(), (guid, asset))
+        # 1c) 规范化名索引：剥掉结尾 _0/_1 序号后缀（AssetRipper 重名导出会加）
+        tk_by_norm.setdefault(_norm_asset_key(asset.stem), (guid, asset))
 
     # 2) 找出包内的同名副本，决定重定向还是改名保留
     redirect: dict[str, str] = {}
@@ -2313,12 +2346,41 @@ def remap_toolkit_duplicates(
             rel = asset.relative_to(package_assets).as_posix().lower()
         except ValueError:
             continue
-        hit = tk_by_rel.get(rel) or tk_by_name.get(asset.stem.lower())
+        # 匹配优先级：相对路径 > 同名 > 规范化名（渐进式剥前缀 + 剥 _0 序号后缀）。
+        # 专治两类漏网副本：AssetRipper 重名导出成 X_0.asset；模组作者给自带资源
+        # 加"任意前缀_"（作者自己的工程习惯，如 RDEP3.0.0_Liquid_Fuel /
+        # RSS Engines_Liquid_Fuel / BetterRCS_Liquid_Fuel）。
+        # 规范化名命中时用 ignore_name 等价判定（加前缀必然连 m_Name 一起改），
+        # 内容其余部分必须一致才重定向，不会误伤真正改过的资产。
+        pkg_stem = asset.stem.lower()
+        hit = tk_by_rel.get(rel) or tk_by_name.get(pkg_stem)
+        loose = False
+        if hit is None:
+            pkg_key = _norm_asset_key(pkg_stem)
+            # 渐进式剥前缀：把下划线分隔的头部 token 逐个丢掉再查
+            # （"rdep3.0.0_liquid_fuel" -> "liquid_fuel"；
+            #   "rss engines_liquid_fuel" -> "liquid_fuel"）
+            candidates = [pkg_key]
+            tokens = pkg_key.split("_")
+            for i in range(1, len(tokens)):
+                tail = "_".join(tokens[i:])
+                if tail:
+                    candidates.append(tail)
+            for cand in candidates:
+                hit = tk_by_norm.get(cand) or tk_by_name.get(cand)
+                if hit is not None:
+                    # 安全边界：ignore_name 模糊等价只用于非 prefab/场景资产
+                    # （燃料/材质/贴图/音效这类"同物异名"副本）。prefab 结构相似
+                    # 且 guid 已打码，忽略 m_Name 会误伤真正的变体部件，故 prefab
+                    # 保持严格内容比较——AssetRipper 的 X_0 重名副本内容完全一致，
+                    # 严格比较照样能过。
+                    loose = asset.suffix.lower() not in (".prefab", ".unity")
+                    break
         if hit is None:
             continue
         result["dupes"] += 1
         tk_guid, tk_asset = hit
-        if tk_guid == pkg_guid or _assets_equivalent(asset, tk_asset):
+        if tk_guid == pkg_guid or _assets_equivalent(asset, tk_asset, ignore_name=loose):
             # 同一个东西的副本：引用改指 Toolkit，包内这份删掉
             redirect[pkg_guid] = tk_guid
             drop.add(asset)
