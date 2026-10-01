@@ -2745,6 +2745,126 @@ def generate_pack_data(
     return rep
 
 
+def dedupe_export_assets(assets_dir: Path, log=None, backup_dir: Path | None = None) -> dict[str, object]:
+    """去除导出工程里的重复资产（X 与 X_0 这类"同物异名"副本）。
+
+    重复的来源：① 同一个暂存目录被多次导出复用，AssetRipper 对同名文件自动加
+    `_0/_1` 序号；② mod 打包时本身就把同一资产打了多份。表现为工程里
+    `Foo.prefab` + `Foo_0.prefab`、`Fuel.asset` + `Fuel_0.asset` 成对出现，
+    内容一致、GUID 不同，打进游戏后部件/资源目录翻倍。
+
+    处理（同目录、同扩展名、规范化名相同——即只差结尾 `_N` 序号——的组内）：
+    - 组员与"首选成员"（无序号者，否则字典序最前）**等价**（忽略 m_Name 与
+      guid 打码）→ 引用改指首选、删除副本（含 .meta）；
+    - 内容确有差异（真正的变体部件）→ 保留不动。
+    prefab 也参与去重：同目录规范化名相同 + 全字段一致（仅名字差）的
+    `X_0` 几乎必然是重复导出，这与跨工程 remap 的保守策略不同——这里的
+    两个文件来自同一个包、同一个作者，误判面小得多。
+    """
+    if log is None:
+        log = print
+    rep: dict[str, object] = {"groups": 0, "removed": 0, "redirected_refs": 0, "kept_diff": []}
+    assets_dir = Path(assets_dir)
+    if not assets_dir.is_dir():
+        return rep
+
+    # 1) 按 (目录, 规范化名, 扩展名) 分组
+    groups: dict[tuple[str, str, str], list[tuple[Path, str]]] = {}
+    for meta in assets_dir.rglob("*.meta"):
+        asset = meta.with_suffix("")
+        if not asset.is_file():
+            continue
+        guid = _meta_guid(meta)
+        if not guid:
+            continue
+        key = (str(asset.parent).lower(), _norm_asset_key(asset.stem), asset.suffix.lower())
+        groups.setdefault(key, []).append((asset, guid))
+
+    # 2) 组内去重：等价副本重定向到首选成员
+    redirect: dict[str, str] = {}
+    drop: set[Path] = set()
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        rep["groups"] += 1
+        def sort_key(item: tuple[Path, str]):
+            stem = item[0].stem
+            return (re.search(r"_\d+$", stem) is not None, len(stem), stem)
+        members_sorted = sorted(members, key=sort_key)
+        keep_asset, keep_guid = members_sorted[0]
+        for cand_asset, cand_guid in members_sorted[1:]:
+            if cand_guid == keep_guid:
+                continue
+            if _assets_equivalent(cand_asset, keep_asset, ignore_name=True):
+                redirect[cand_guid] = keep_guid
+                drop.add(cand_asset)
+            else:
+                rep["kept_diff"].append(cand_asset.relative_to(assets_dir).as_posix())
+
+    if not redirect:
+        if rep["kept_diff"]:
+            log("[去重] 发现 {} 个同名不同内容的资产 原样保留".format(len(rep["kept_diff"])))
+        return rep
+
+    # 3) 工程内所有文本资产重写引用
+    def repl(m: re.Match) -> str:
+        new = redirect.get(m.group(1).lower())
+        if not new:
+            return m.group(0)
+        rep["redirected_refs"] += 1
+        return "guid: " + new
+
+    for f in assets_dir.rglob("*"):
+        if not f.is_file() or f.suffix.lower() not in REWRITE_SUFFIXES:
+            continue
+        if f in drop:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "guid:" not in text:
+            continue
+        new_text = GUID_FIELD_RE.sub(repl, text)
+        if new_text != text:
+            if backup_dir is not None:
+                try:
+                    rel = f.relative_to(assets_dir)
+                    dst = Path(backup_dir) / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if not dst.is_file():
+                        dst.write_bytes(f.read_bytes())
+                except OSError:
+                    pass
+            try:
+                f.write_text(new_text, encoding="utf-8")
+            except OSError:
+                continue
+
+    # 4) 删除重复副本（含 .meta），先备份
+    for asset in drop:
+        for p in (asset, Path(str(asset) + ".meta")):
+            try:
+                if backup_dir is not None and p.is_file():
+                    rel = p.relative_to(assets_dir)
+                    dst = Path(backup_dir) / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if not dst.is_file():
+                        dst.write_bytes(p.read_bytes())
+                if p.is_file():
+                    p.unlink()
+                    if p.suffix != ".meta":
+                        rep["removed"] += 1
+            except OSError:
+                pass
+
+    log("[去重] 重复资产 {n} 个已移除 引用重写 {refs} 处 (组 {g} 个)".format(
+        n=rep["removed"], refs=rep["redirected_refs"], g=rep["groups"]))
+    if rep["kept_diff"]:
+        log("[去重] [!] {} 个同名不同内容的资产已保留 (真变体)".format(len(rep["kept_diff"])))
+    return rep
+
+
 def repair_toolkit_dangling_refs(
     toolkit_root: Path,
     package_assets: Path | str | None = None,

@@ -117,6 +117,7 @@ TEXT = {
         "install_repair_done": "[安装] 已修复 {n} 个引用悬空的既有资产 原文件已备份到 {path}",
         "packdata_done": "[PackData] 已自动生成 PackData 资产 {path} 并统一 {labeled} 个资产标签 {label} Unity 里 SFS→打包模组包 选资产+标签即可出包",
         "packdata_fail": "[PackData] [!] 自动生成失败 {error} 可在 Unity 手动创建",
+        "log_dedupe_fail": "[去重] [!] 工程内去重失败 {exc}",
         "repair_start": "开始清理 Toolkit 里残留的 AssetRipper 空壳着色器(零件渲成黑板的根因)...",
         "repair_done": "[修复] 已删除 {stubs} 个空壳着色器 重写 {refs} 处材质引用 同步 {names} 个资产名 备份于 {backup}",
         "repair_none": "[修复] 没发现空壳着色器 Toolkit 已是干净的",
@@ -252,6 +253,7 @@ TEXT = {
         "install_repair_done": "[Install] Repaired {n} existing assets with dangling refs; originals backed up to {path}",
         "packdata_done": "[PackData] Generated PackData asset {path} and labeled {labeled} assets '{label}'. In Unity: SFS -> Build Pack, pick the asset + label to build.",
         "packdata_fail": "[PackData] [!] Auto-generation failed: {error} (create it manually in Unity)",
+        "log_dedupe_fail": "[Dedupe] [!] In-project dedupe failed: {exc}",
         "repair_start": "Cleaning leftover AssetRipper stub shaders in the Toolkit (the cause of black parts)...",
         "repair_done": "[Repair] Deleted {stubs} stub shaders, rewrote {refs} material refs, synced {names} asset names. Backup at {backup}",
         "repair_none": "[Repair] No stub shaders found; the Toolkit is clean.",
@@ -378,6 +380,8 @@ def _zh2en(msg: str) -> str:
         "[扫描]": "[Scan]",
         "[整理]": "[Group]",
         "[闸门]": "[GATE]",
+        "[去重]": "[Dedupe]",
+        "[PackData]": "[PackData]",
     }
     phrases = [
         ("空壳", "stub"),
@@ -1428,6 +1432,8 @@ class App:
 
         def _run(log) -> None:
             try:
+                # 暂存目录复用会让 AssetRipper 二次导出产生 X_0 重复文件，先清掉上一次的
+                shutil.rmtree(output, ignore_errors=True)
                 self.export_project(log, output, toolkit_dir, bool(self.install_var.get()))
                 # 合并：一键导出同时清理 Toolkit 空壳着色器与悬空引用
                 self.repair_toolkit(log, toolkit_dir, package_dir)
@@ -1548,6 +1554,16 @@ class App:
                     log(self.t("log_organize_skip", error=oreps.get("error")))
             except Exception as exc:
                 log(self.t("log_organize_fail", exc=exc))
+
+            # 1.85) 工程内去重：移除 X 与 X_0 这类"同物异名"的重复导出资产
+            #      （暂存目录复用 / 包内同名重复都会产生），引用统一改指保留的那份
+            try:
+                import sfs_pack_core as keepalive
+                keepalive.dedupe_export_assets(
+                    exported_dir / "Assets", log=self.tlog,
+                    backup_dir=exported_dir / "_DEDUPE_BACKUP")
+            except Exception as exc:
+                log(self.t("log_dedupe_fail", exc=exc))
 
             # 1.9) 合并闸门：仍有脚本 GUID 在工程里查无此人 → 拒绝合并并落排查清单
             if gate_report:

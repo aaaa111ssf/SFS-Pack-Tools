@@ -982,6 +982,47 @@ def test_generate_pack_data(tmp: Path, r: Result) -> None:
     r.check("重复生成幂等", rep2.get("ok") is True and asset.is_file())
 
 
+def test_export_dedupe(tmp: Path, r: Result) -> None:
+    print("\n=== 2g. 导出工程去重：X 与 X_0 重复资产 ===")
+    import sfs_pack_core as ka
+
+    pkg = tmp / "proj" / "Assets"
+    GA, GB, GC, GD = "1" * 32, "2" * 32, "3" * 32, "4" * 32
+
+    def meta(guid):
+        return f"fileFormatVersion: 2\nguid: {guid}\n"
+
+    # 重复对：Foo.prefab 与 Foo_0.prefab 内容一致（仅内部 m_Name 差），引用指向 Foo_0
+    write(pkg / "Parts" / "Foo.prefab", "GameObject:\n  m_Name: Foo\n")
+    write(pkg / "Parts" / "Foo.prefab.meta", meta(GA))
+    write(pkg / "Parts" / "Foo_0.prefab", "GameObject:\n  m_Name: Foo_0\n")
+    write(pkg / "Parts" / "Foo_0.prefab.meta", meta(GB))
+    # 真变体：Bar 与 Bar_0 内容确有差异，必须保留
+    write(pkg / "Parts" / "Bar.prefab", "GameObject:\n  m_Name: Bar\n  hp: 1\n")
+    write(pkg / "Parts" / "Bar.prefab.meta", meta(GC))
+    write(pkg / "Parts" / "Bar_0.prefab", "GameObject:\n  m_Name: Bar_0\n  hp: 2\n")
+    write(pkg / "Parts" / "Bar_0.prefab.meta", meta(GD))
+    # 部件引用了重复副本 Foo_0
+    write(pkg / "Parts" / "User.prefab",
+          "MonoBehaviour:\n  ref: {fileID: 150000, guid: %s, type: 2}\n" % GB)
+    write(pkg / "Parts" / "User.prefab.meta", meta("9" * 32))
+
+    backup = tmp / "proj" / "_DEDUPE_BACKUP"
+    rep = ka.dedupe_export_assets(pkg, log=lambda *_: None, backup_dir=backup)
+    r.check("重复副本已删除", not (pkg / "Parts" / "Foo_0.prefab").is_file()
+            and not (pkg / "Parts" / "Foo_0.prefab.meta").is_file())
+    r.check("保留 Foo.prefab", (pkg / "Parts" / "Foo.prefab").is_file())
+    r.check("引用改指 Foo 的 guid",
+            "guid: " + GA in (pkg / "Parts" / "User.prefab").read_text(encoding="utf-8")
+            and "guid: " + GB not in (pkg / "Parts" / "User.prefab").read_text(encoding="utf-8"))
+    r.check("真变体 Bar_0 保留", (pkg / "Parts" / "Bar_0.prefab").is_file())
+    r.check("删除数统计=1", rep.get("removed") == 1)
+    r.check("被删文件有备份", (backup / "Parts" / "Foo_0.prefab").is_file())
+    # 幂等：再跑一遍不再有动作
+    rep2 = ka.dedupe_export_assets(pkg, log=lambda *_: None, backup_dir=None)
+    r.check("幂等：二次去重无动作", rep2.get("removed") == 0)
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -1000,6 +1041,7 @@ def main() -> int:
         test_translation_key_filtering(tmp, r)
         test_resource_dup_redirect(tmp, r)
         test_generate_pack_data(tmp, r)
+        test_export_dedupe(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)
         test_install_never_overwrites(tmp, r)
