@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -2206,11 +2207,15 @@ def _norm_asset_text(text: str, ignore_name: bool = False) -> str:
     与 Toolkit 里原版的差别恰恰就在 `{fileID: 2800000, guid: xxx, type: 3}`
     这种内联引用上，而不是独立的 guid 行（那是 .meta 才有的）。
 
-    另外两类**无语义差异**也要抹平，否则 AssetRipper 导出的
-    ScriptableObject（如 ResourceType 燃料资产）会被误判成"mod 改过"：
+    另外三类**无语义差异**也要抹平，否则 AssetRipper 导出的
+    ScriptableObject（如 ResourceType 燃料 / PickCategory 分类）会被误判成
+    "mod 改过"：
     - `m_EditorClassIdentifier:`：纯编辑器元数据，运行时类由 m_Script guid 决定
       （两份相同，已打码），空 vs 有值不影响任何行为；
-    - `plainText: 0`：TranslationVariable 的 C# 默认值，与缺省该字段完全等价。
+    - `plainText: 0`：TranslationVariable 的 C# 默认值，与缺省该字段完全等价；
+    - `TranslatableGroup:`：AssetRipper 导出常丢该字段（实测 RDEP
+      `RDEP3.0.0_Engines` 缺 `TranslatableGroup: Pick List Names`，游戏里分类名
+      查不到翻译）。抹平后副本重定向到 Toolkit 原版，显示反而被修正。
     （实例：RDEP3.0.0 的 `RDEP3.0.0_Liquid_Fuel` 与 Toolkit `Liquid_Fuel` 就是
     因此被误判不同而保留副本，导致 Flow.resourceType 指着模组私有燃料，
     与官方油箱的燃料互不流通。）
@@ -2229,6 +2234,8 @@ def _norm_asset_text(text: str, ignore_name: bool = False) -> str:
         if stripped.startswith("m_EditorClassIdentifier:"):
             continue
         if stripped in ("plainText: 0", "plainText: 0\r"):
+            continue
+        if stripped.startswith("TranslatableGroup:"):
             continue
         if ignore_name and stripped.startswith("m_Name:"):
             continue
@@ -2452,6 +2459,290 @@ def remap_toolkit_duplicates(
         log("[对齐] [!] {} 个同名资源内容与 Toolkit 不同 已保留 mod 版本并改名 {}".format(
             len(result["kept_diff"]), result["kept_diff"][:8]))
     return result
+
+
+def _quote_yaml(s: object) -> str:
+    """按 Unity YAML 的单引号规则转义字符串。"""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def _set_meta_label(meta_path: Path, label: str) -> bool:
+    """把 .meta 的 AssetBundle 标签设为 label（Importer 块内的缩进行才是 Unity 读取处）。
+
+    同时清掉顶格的 assetBundleName/Variant 行（无效位置，留着只会误导人）。
+    返回内容是否有变化。
+    """
+    try:
+        s = meta_path.read_text(encoding="utf-8-sig", errors="ignore")
+    except OSError:
+        return False
+    if "folderAsset: yes" in s:
+        return False
+    lines = s.split("\n")
+    out: list[str] = []
+    has_name = has_var = False
+    for line in lines:
+        if re.match(r"^assetBundle(Name|Variant):", line):
+            continue  # 顶格无效行，丢弃
+        m = re.match(r"^(\s*)assetBundleName:", line)
+        if m:
+            out.append(m.group(1) + "assetBundleName: " + label)
+            has_name = True
+            continue
+        m = re.match(r"^(\s*)assetBundleVariant:", line)
+        if m:
+            out.append(m.group(1) + "assetBundleVariant: ")
+            has_var = True
+            continue
+        out.append(line)
+    if not has_name or not has_var:
+        while out and out[-1].strip() == "":
+            out.pop()
+        if not has_name:
+            out.append("  assetBundleName: " + label)
+        if not has_var:
+            out.append("  assetBundleVariant: ")
+        out.append("")
+    new = "\n".join(out)
+    if new == s:
+        return False
+    try:
+        meta_path.write_text(new, encoding="utf-8", newline="")
+    except OSError:
+        return False
+    return True
+
+
+def _read_pack_metadata(pack_file: Path) -> dict | None:
+    """从原 .pack 的 AssetBundle 里读 PackData 元数据（DisplayName/Version/...）。
+
+    读不到（无 UnityPy / 包里没有 PackData）返回 None，由调用方优雅跳过。
+    """
+    try:
+        import UnityPy  # noqa: PLC0415
+    except Exception:
+        return None
+    try:
+        data = json.loads(Path(pack_file).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    for key in ("WindowsBuild", "MacBuild", "AndroidBuild", "IOS_Build"):
+        payload = data.get(key)
+        if not isinstance(payload, str) or not payload.strip():
+            continue
+        try:
+            env = UnityPy.load(base64.b64decode(payload))
+        except Exception:
+            continue
+        for obj in env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            try:
+                tree = obj.read_typetree()
+            except Exception:
+                continue
+            if isinstance(tree, dict) and "DisplayName" in tree:
+                icon_id = 0
+                icon = tree.get("Icon")
+                if isinstance(icon, dict):
+                    icon_id = int(icon.get("m_PathID") or 0)
+                return {
+                    "display_name": tree.get("DisplayName") or "",
+                    "version": tree.get("Version") or "",
+                    "description": tree.get("Description") or "",
+                    "author": tree.get("Author") or "",
+                    "show_icon": bool(tree.get("ShowIcon")),
+                    "icon_path_id": icon_id,
+                    "env": env,
+                }
+    return None
+
+
+def generate_pack_data(
+    toolkit_root: Path,
+    pack_file: Path,
+    mod_name: str,
+    log=None,
+    backup: bool = True,
+    metadata: dict | None = None,
+) -> dict[str, object]:
+    """自动生成 ModBuilder 用的 PackData 资产 + 统一模组资产的 AssetBundle 标签。
+
+    一键导出并入 Toolkit 后，用户还差两步才能在 Unity 的 ModBuilder 里出包：
+    ① 建一个 PackData 资产填显示名/作者/版本；② 给模组全部资产设同一个
+    AssetBundle 标签。本函数把这两步自动化：
+
+    1. 元数据从**原 .pack 内的 PackData** 读出（作者填过的那套，UnityPy 提取）；
+    2. 生成 `Assets/ModBuilder/PackData/<mod_name>.asset`（m_Script 指向该
+       Toolkit 自己的 PackData.cs，GUID 随机生成不与任何资产冲突）；
+    3. 给 `Assets/Resources/Parts/<mod_name>` 与 `Assets/<mod_name>` 下全部
+       非文件夹资产设标签 `assetBundleName: <mod_name>`（Importer 块内，
+       Unity 真正读取的位置）；
+    4. 原包带 CodeAssembly 时顺手导出 dll，供 ModBuilder 弹窗直接选择。
+    改动文件全部先备份到 `toolkit/_PackToolBackup/`。
+    """
+    if log is None:
+        log = print
+    rep: dict[str, object] = {"ok": False, "packdata": "", "labeled": 0, "icon": False, "dll": "", "skip": ""}
+    toolkit_root = Path(toolkit_root)
+    assets = toolkit_root / "Assets"
+    if not assets.is_dir():
+        rep["skip"] = "not_toolkit"
+        return rep
+
+    # 1) 找该 Toolkit 自己的 PackData.cs（脚本 guid 因工程而异）
+    script_guid = ""
+    for cand in assets.rglob("PackData.cs.meta"):
+        m = re.search(r"guid: ([0-9a-f]{32})", cand.read_text(encoding="utf-8-sig", errors="ignore"))
+        if m:
+            script_guid = m.group(1)
+            break
+    if not script_guid:
+        rep["skip"] = "no_packdata_script"
+        log("[PackData] 未找到 PackData.cs 跳过生成（目录不是 Modding Toolkit 工程？）")
+        return rep
+
+    # 2) 元数据：优先外部注入（测试用），否则从原包读
+    meta_info = metadata if metadata is not None else _read_pack_metadata(Path(pack_file))
+    if meta_info is None:
+        rep["skip"] = "no_metadata"
+        log("[PackData] 原包里没读到 PackData 元数据 跳过生成（可在 Unity 手动建）")
+        return rep
+
+    backup_root = toolkit_root / "_PackToolBackup" / (time.strftime("%Y%m%d_%H%M%S") + "_" + mod_name + "_packdata")
+
+    def backup_file(p: Path) -> None:
+        if not backup:
+            return
+        try:
+            rel = p.relative_to(toolkit_root)
+            dst = backup_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.is_file():
+                dst.write_bytes(p.read_bytes())
+        except OSError:
+            pass
+
+    # 3) 图标（可选）：原包 ShowIcon 且能取出贴图才生成，任何一步失败就退回无图标
+    icon_guid = ""
+    show_icon = bool(meta_info.get("show_icon"))
+    if show_icon and meta_info.get("icon_path_id"):
+        try:
+            env = meta_info["env"]
+            tex = None
+            for obj in env.objects:
+                if obj.type.name == "Texture2D" and obj.path_id == meta_info["icon_path_id"]:
+                    tex = obj
+                    break
+            if tex is not None:
+                img = tex.image  # 需要 Pillow
+                icon_dir = assets / "ModBuilder" / "PackData"
+                icon_dir.mkdir(parents=True, exist_ok=True)
+                icon_png = icon_dir / (mod_name + "_icon.png")
+                img.save(icon_png)
+                icon_guid = uuid.uuid4().hex
+                (icon_png.with_suffix(".png.meta")).write_text(
+                    "fileFormatVersion: 2\nguid: " + icon_guid + "\n"
+                    "TextureImporter:\n"
+                    "  internalIDToNameTable: []\n"
+                    "  externalObjects: {}\n"
+                    "  serializedVersion: 12\n"
+                    "  mipmaps:\n"
+                    "    mipMapMode: 0\n"
+                    "    enableMipMap: 0\n"
+                    "  isReadable: 0\n"
+                    "  textureSettings:\n"
+                    "    filterMode: 1\n"
+                    "  textureFormat: -1\n"
+                    "  maxTextureSize: 512\n"
+                    "  textureType: 8\n"
+                    "  assetBundleName: " + mod_name + "\n"
+                    "  assetBundleVariant: \n",
+                    encoding="utf-8", newline="")
+                rep["icon"] = True
+        except Exception:
+            icon_guid = ""
+            show_icon = False
+
+    # 4) 写 PackData 资产
+    pd_dir = assets / "ModBuilder" / "PackData"
+    pd_dir.mkdir(parents=True, exist_ok=True)
+    asset_path = pd_dir / (mod_name + ".asset")
+    icon_field = ("{fileID: 2800000, guid: " + icon_guid + ", type: 0}" if icon_guid else "{fileID: 0}")
+    yaml = (
+        "%YAML 1.1\n"
+        "%TAG !u! tag:unity3d.com,2011:\n"
+        "--- !u!114 &11400000\n"
+        "MonoBehaviour:\n"
+        "  m_ObjectHideFlags: 0\n"
+        "  m_CorrespondingSourceObject: {fileID: 0}\n"
+        "  m_PrefabInstance: {fileID: 0}\n"
+        "  m_PrefabAsset: {fileID: 0}\n"
+        "  m_GameObject: {fileID: 0}\n"
+        "  m_Enabled: 1\n"
+        "  m_EditorHideFlags: 0\n"
+        "  m_Script: {fileID: 11500000, guid: " + script_guid + ", type: 3}\n"
+        "  m_Name: " + _quote_yaml(mod_name) + "\n"
+        "  DisplayName: " + _quote_yaml(meta_info.get("display_name") or mod_name) + "\n"
+        "  Version: " + _quote_yaml(meta_info.get("version") or "") + "\n"
+        "  Description: " + _quote_yaml(meta_info.get("description") or "") + "\n"
+        "  Author: " + _quote_yaml(meta_info.get("author") or "") + "\n"
+        "  ShowIcon: " + ("1" if (show_icon and icon_guid) else "0") + "\n"
+        "  Icon: " + icon_field + "\n"
+    )
+    meta_yaml = (
+        "fileFormatVersion: 2\n"
+        "guid: " + uuid.uuid4().hex + "\n"
+        "NativeFormatImporter:\n"
+        "  externalObjects: {}\n"
+        "  mainObjectFileID: 11400000\n"
+        "  userData: \n"
+        "  assetBundleName: " + mod_name + "\n"
+        "  assetBundleVariant: \n"
+    )
+    existed = asset_path.is_file()
+    if existed and backup:
+        backup_file(asset_path)
+        backup_file(Path(str(asset_path) + ".meta"))
+    asset_path.write_text(yaml, encoding="utf-8", newline="")
+    Path(str(asset_path) + ".meta").write_text(meta_yaml, encoding="utf-8", newline="")
+    rep["packdata"] = str(asset_path)
+    log("[PackData] {action} PackData 资产 {path} (显示名 {name} 版本 {ver} 作者 {author})".format(
+        action="更新" if existed else "生成", path=str(asset_path),
+        name=meta_info.get("display_name") or mod_name,
+        ver=meta_info.get("version") or "-", author=meta_info.get("author") or "-"))
+    if rep["icon"]:
+        log("[PackData] 已导出原包图标并挂到 PackData")
+
+    # 5) 给模组安装目录的资产统一标签
+    labeled = 0
+    mod_dirs = [assets / "Resources" / "Parts" / mod_name, assets / mod_name]
+    for mod_dir in mod_dirs:
+        if not mod_dir.is_dir():
+            continue
+        for meta_path in mod_dir.rglob("*.meta"):
+            if _set_meta_label(meta_path, mod_name):
+                backup_file(meta_path)
+                labeled += 1
+    rep["labeled"] = labeled
+    if labeled:
+        log("[PackData] 已给 {n} 个资产的 .meta 设置 AssetBundle 标签 {label} (改动已备份到 {backup})".format(
+            n=labeled, label=mod_name, backup=str(backup_root) if backup else "(已禁用)"))
+
+    # 6) CodeAssembly：原包带自定义脚本时导出 dll 供 ModBuilder 弹窗选择
+    try:
+        data = json.loads(Path(pack_file).read_text(encoding="utf-8-sig"))
+        ca = data.get("CodeAssembly")
+        if isinstance(ca, str) and ca.strip():
+            dll = assets / "ModBuilder" / (mod_name + "_CodeAssembly.dll")
+            dll.write_bytes(base64.b64decode(ca))
+            rep["dll"] = str(dll)
+            log("[PackData] 原包带自定义脚本 已导出 {path} (构建弹窗时选择它)".format(path=str(dll)))
+    except Exception:
+        pass
+
+    rep["ok"] = True
+    return rep
 
 
 def repair_toolkit_dangling_refs(

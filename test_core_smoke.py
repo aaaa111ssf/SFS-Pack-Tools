@@ -941,6 +941,47 @@ def test_resource_dup_redirect(tmp: Path, r: Result) -> None:
             and not (pkg / "Fu" / "Tank_0.prefab").is_file())
 
 
+def test_generate_pack_data(tmp: Path, r: Result) -> None:
+    print("\n=== 2f. PackData 自动生成 + 标签统一 ===")
+    import sfs_pack_core as ka
+
+    toolkit = tmp / "tk"
+    write(toolkit / "Assets/Scripts/Needed/PackData.cs.meta", unity_meta("a" * 32))
+    write(toolkit / "Assets/Resources/Parts/RDEP/Foo.prefab", "GameObject:\n  m_Name: Foo\n")
+    write(toolkit / "Assets/Resources/Parts/RDEP/Foo.prefab.meta", unity_meta("b" * 32))
+    write(toolkit / "Assets/RDEP/Other/Fuel.asset", "MonoBehaviour:\n  m_Name: Fuel\n")
+    write(toolkit / "Assets/RDEP/Other/Fuel.asset.meta", unity_meta("c" * 32))
+    # 文件夹 meta：不应被标注
+    write(toolkit / "Assets/RDEP/Other.meta",
+          "fileFormatVersion: 2\nguid: " + "d" * 32 + "\nfolderAsset: yes\n")
+    pack = tmp / "mod.pack"
+    write(pack, json.dumps({"WindowsBuild": "AAAA"}))
+
+    metadata = {"display_name": "My Mod", "version": "v1.0", "description": "desc",
+                "author": "Someone", "show_icon": False, "icon_path_id": 0}
+    rep = ka.generate_pack_data(toolkit, pack, "RDEP", log=lambda *_: None, metadata=metadata)
+    r.check("PackData 生成成功", rep.get("ok") is True)
+    asset = toolkit / "Assets/ModBuilder/PackData/RDEP.asset"
+    r.check("PackData 资产存在", asset.is_file())
+    body = asset.read_text(encoding="utf-8")
+    r.check("m_Script 指向本工程 PackData.cs", "guid: " + "a" * 32 in body)
+    r.check("元数据正确写入",
+            "DisplayName: 'My Mod'" in body and "Author: 'Someone'" in body
+            and "Version: 'v1.0'" in body and "ShowIcon: 0" in body)
+    mmeta = asset.with_suffix(".asset.meta").read_text(encoding="utf-8")
+    r.check("PackData 自带标签（Importer 块内）",
+            "NativeFormatImporter" in mmeta and "assetBundleName: RDEP" in mmeta)
+    r.check("部件标签已统一",
+            "assetBundleName: RDEP" in (toolkit / "Assets/Resources/Parts/RDEP/Foo.prefab.meta").read_text(encoding="utf-8"))
+    r.check("Mod 目录资产标签已统一",
+            "assetBundleName: RDEP" in (toolkit / "Assets/RDEP/Other/Fuel.asset.meta").read_text(encoding="utf-8"))
+    r.check("文件夹 meta 不标注",
+            "assetBundleName: RDEP" not in (toolkit / "Assets/RDEP/Other.meta").read_text(encoding="utf-8"))
+    r.check("guid 保留", "b" * 32 in (toolkit / "Assets/Resources/Parts/RDEP/Foo.prefab.meta").read_text(encoding="utf-8"))
+    rep2 = ka.generate_pack_data(toolkit, pack, "RDEP", log=lambda *_: None, metadata=metadata)
+    r.check("重复生成幂等", rep2.get("ok") is True and asset.is_file())
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -958,6 +999,7 @@ def main() -> int:
         test_pack_info_and_strip_guards(tmp, r)
         test_translation_key_filtering(tmp, r)
         test_resource_dup_redirect(tmp, r)
+        test_generate_pack_data(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)
         test_install_never_overwrites(tmp, r)

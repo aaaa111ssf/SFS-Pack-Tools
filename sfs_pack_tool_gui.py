@@ -115,6 +115,8 @@ TEXT = {
         "install_nothing": "[安装] 没有新文件需要写入 Toolkit",
         "install_replaced_stale": "[安装] 已替换 {n} 个 GUID 过期的同名残留(上一轮导入留下的旧版本占位 会让贴图/材质挂空) 原文件已备份到 {path}",
         "install_repair_done": "[安装] 已修复 {n} 个引用悬空的既有资产 原文件已备份到 {path}",
+        "packdata_done": "[PackData] 已自动生成 PackData 资产 {path} 并统一 {labeled} 个资产标签 {label} Unity 里 SFS→打包模组包 选资产+标签即可出包",
+        "packdata_fail": "[PackData] [!] 自动生成失败 {error} 可在 Unity 手动创建",
         "repair_start": "开始清理 Toolkit 里残留的 AssetRipper 空壳着色器(零件渲成黑板的根因)...",
         "repair_done": "[修复] 已删除 {stubs} 个空壳着色器 重写 {refs} 处材质引用 同步 {names} 个资产名 备份于 {backup}",
         "repair_none": "[修复] 没发现空壳着色器 Toolkit 已是干净的",
@@ -248,6 +250,8 @@ TEXT = {
         "install_nothing": "[Install] No new files need to be written to the Toolkit",
         "install_replaced_stale": "[Install] Replaced {n} same-named leftovers with stale GUIDs (old versions occupying the slot cause missing textures/materials); originals backed up to {path}",
         "install_repair_done": "[Install] Repaired {n} existing assets with dangling refs; originals backed up to {path}",
+        "packdata_done": "[PackData] Generated PackData asset {path} and labeled {labeled} assets '{label}'. In Unity: SFS -> Build Pack, pick the asset + label to build.",
+        "packdata_fail": "[PackData] [!] Auto-generation failed: {error} (create it manually in Unity)",
         "repair_start": "Cleaning leftover AssetRipper stub shaders in the Toolkit (the cause of black parts)...",
         "repair_done": "[Repair] Deleted {stubs} stub shaders, rewrote {refs} material refs, synced {names} asset names. Backup at {backup}",
         "repair_none": "[Repair] No stub shaders found; the Toolkit is clean.",
@@ -1591,6 +1595,18 @@ class App:
                     log(self.t("install_skipped_opt"))
                 else:
                     self.install_into_toolkit(log, Path(toolkit_dir), Path(str(mrep["package_dir"])), mrep)
+                    # 2.5) 自动生成 PackData 资产 + 统一 AssetBundle 标签：
+                    #      并入后用户在 Unity 的 ModBuilder 里选资产+标签即可一键出包
+                    try:
+                        import sfs_pack_core as keepalive
+                        mod_name = keepalive.mod_folder_name(Path(self.input_file))
+                        prep = keepalive.generate_pack_data(
+                            Path(toolkit_dir), Path(self.input_file), mod_name, log=self.tlog)
+                        if prep.get("ok"):
+                            log(self.t("packdata_done", path=prep.get("packdata", ""),
+                                       labeled=prep.get("labeled", 0), label=mod_name))
+                    except Exception as exc:
+                        log(self.t("packdata_fail", error=exc))
 
             # 4) 导出后自检：校验导出工程所有 prefab 的脚本引用是否在 Toolkit 命中
             try:
