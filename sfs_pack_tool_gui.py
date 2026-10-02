@@ -216,8 +216,8 @@ TEXT = {
         "chinese": "中文",
         "english": "English",
         "input_frame": "Input Files",
-        "select_pack": "Select source mod.pack",
-        "select_translation": "Select translation JSON",
+        "select_pack": "Select mod.pack",
+        "select_translation": "Select translation",
         "no_pack": "No mod.pack selected",
         "translation_none": "Translation JSON: none selected",
         "translation_selected_label": "Translation JSON: {name}",
@@ -226,11 +226,11 @@ TEXT = {
         "author": "Translator signature:",
         "extract": "Extract translatable text",
         "extract_path": "Extracted JSON save path:",
-        "select_json_path": "Choose save location",
+        "select_json_path": "Browse...",
         "write": "Apply translation and create Pack",
         "export_frame": "Unity Prefab / Texture / Project Export",
         "builtin_ripper_hint": "Uses the built-in AssetRipper (bundled with the tool); no manual selection or download needed.",
-        "export": "Export Unity project",
+        "export": "Quick Export",
         "ready": "Ready. Select a mod.pack; export includes Prefabs, textures, materials, .meta files and Unity project files.",
         "select_pack_first": "Select the source mod.pack first.",
         "no_pack_title": "No input file",
@@ -297,9 +297,9 @@ TEXT = {
         "strip_hint": "Strip = keep only the checked platform Builds and CodeAssembly, remove other platforms to greatly reduce .pack size.\nThe pack is scanned first to guarantee at least one platform remains.",
         "target_platform": "Platforms to keep (multi-select):",
         "select_strip_output": "Output location:",
-        "pick_strip_output": "Choose location",
+        "pick_strip_output": "Browse...",
         "analyze": "Pack info",
-        "strip": "Strip to selected platforms",
+        "strip": "Strip Selected",
         "strip_scan_header": "[Strip] Pack scanned: {builds} platform(s): {list}",
         "strip_scan_plat": "    {plat}: {size}",
         "strip_missing_warn": "[Strip] [!] Selected platforms {missing} are not in the pack; keeping {kept} only.",
@@ -384,6 +384,77 @@ def _zh2en(msg: str) -> str:
         "[PackData]": "[PackData]",
     }
     phrases = [
+        # --- PackData / 去重 / 单平台解码（整句优先 防止被后面的通用短语缝合成怪句）---
+        ("[PackData] 生成 PackData 资产", "[PackData] generated PackData asset"),
+        ("[PackData] 更新 PackData 资产", "[PackData] updated PackData asset"),
+        ("PackData 资产", "PackData asset"),
+        ("(显示名", "(display name"),
+        ("[PackData] 未找到 PackData.cs 跳过生成（目录不是 Modding Toolkit 工程？）",
+         "[PackData] PackData.cs not found; skipped (not a Modding Toolkit project?)"),
+        ("[PackData] 原包里没读到 PackData 元数据 跳过生成（可在 Unity 手动建）",
+         "[PackData] no PackData metadata in the original .pack; skipped (create it manually in Unity)"),
+        ("[PackData] 已给", "[PackData] labeled"),
+        ("资产的 .meta 设置 AssetBundle 标签", " assets' .meta with AssetBundle label"),
+        ("(改动已备份到", "(changes backed up to"),
+        ("(已禁用)", "(disabled)"),
+        ("原包带自定义脚本 已导出", "pack carries custom scripts; exported"),
+        ("(构建弹窗时选择它)", "(pick it in the build dialog)"),
+        ("已导出原包图标并挂到 PackData", "original pack icon exported and wired to PackData"),
+        ("[Dedupe] 重复资产", "[Dedupe] duplicate assets removed:"),
+        ("个已移除 引用重写", ", rewrote"),
+        ("处 (组", " refs ("),
+        ("[Dedupe] 发现", "[Dedupe] found"),
+        ("个同名不同内容的资产 原样保留", " same-named assets with different content; kept as-is"),
+        ("个同名不同内容的资产已保留 (真变体)", " same-named assets with different content; kept (true variants)"),
+        ("单平台导出：仅解码", "single-platform export: decoding only"),
+        ("（其余", " (the other"),
+        ("平台内容相同 跳过避免重复）", " platform(s) carry identical content; skipped to avoid duplicates)"),
+        ("字节 已导出", "bytes, exported"),
+        ("已解码", "decoded"),
+        ("字节", "bytes"),
+        ("[!] 跳过", "[!] skip:"),
+        ("按资产名对齐", "aligned by asset name:"),
+        ("的脚本类", " script classes"),
+        ("以下原版类在 Toolkit 中找不到源码 无法接上", "these stock classes have no source in the Toolkit; cannot wire:"),
+        ("（已有 stub 可用 忽略）", "(a stub is available; ignored)"),
+        ("反编译没有产出", "decompile produced nothing:"),
+        ("反编译调用失败", "decompile call failed:"),
+        ("未找到 ilspycmd 跳过自动反编译", "ilspycmd not found; auto-decompile skipped"),
+        ("kept不动", "kept untouched"),
+        ("Toolkit 已有部件", "Toolkit existing parts:"),
+        ("Toolkit 里已有但脚本挂空 本次一并更新", "already in Toolkit with hanging scripts; updated too"),
+        ("Toolkit 自带部件", "Toolkit bundled parts"),
+        ("Toolkit 缺少 Assets 目录", "Toolkit lacks an Assets directory"),
+        ("Toolkit 脚本已拷贝 但未能读出任何 .cs.meta GUID", "Toolkit scripts copied but no .cs.meta GUID readable"),
+        ("已与 prefab 引用一一对应 贴进 Toolkit 后无需重新挂接", "one-to-one with prefab refs; no re-mounting needed in the Toolkit"),
+        ("重写 materials引用", "rewrote materials refs at"),
+        ("deletedstub", "deleted stub"),
+        ("materials现指向 Toolkit 真着色器", "materials now point to real Toolkit shaders"),
+        ("CodeAssembly 有", "CodeAssembly:"),
+        ("CodeAssembly 无", "CodeAssembly: none"),
+        ("Plugins 里还没有同名", "no same-named dll yet in Plugins:"),
+        (".pack 根节点必须是 JSON 对象", ".pack root must be a JSON object"),
+        ("AssetRipper 完成后未找到任何 .prefab 文件", "no .prefab files found after AssetRipper finished"),
+        ("AssetRipper 启动后立即退出 退出码", "AssetRipper exited immediately, code"),
+        ("AssetRipper 已下载 但未找到", "AssetRipper downloaded but missing:"),
+        ("未找到 AssetRipper 正在下载", "AssetRipper not found; downloading"),
+        ("AssetRipper 请求", "AssetRipper request"),
+        ("未在 .pack 中找到可用 UnityFS AssetBundle 检查字段", "no usable UnityFS AssetBundle fields found in the .pack:"),
+        ("❌ 已取消", "❌ cancelled"),
+        ("音频以 byte[] 内嵌在 .asset 里 不会自动变成可播放的 .wav/.ogg 提取后才可试听",
+         "audio is embedded as byte[] inside .asset; export it first to get a playable .wav/.ogg"),
+        ("materials 现指向 Toolkit 真着色器", "materials now point to real Toolkit shaders"),
+        ("重写 materials 引用", "rewrote materials refs at"),
+        ("AssetRipper 完成后未生成 Assets 目录", "Assets directory not generated after AssetRipper"),
+        ("可执行文件", "executable"),
+        ("日志已复制到", "log copied to"),
+        ("真 dll 当插件", "real dll as plugin"),
+        ("程序集", "assembly"),
+        ("类名", "class name"),
+        ("<冲突>", "<collision>"),
+        ("发现", "found"),
+        ("版本", "version"),
+        ("作者", "author"),
         ("空壳", "stub"),
         ("说明这份 Toolkit 混入了 AssetRipper 占位 stub", "this Toolkit contains AssetRipper placeholder stubs"),
         ("会自动跳过这些 stub 但建议换成干净的 Toolkit 工程", "these stubs are auto-skipped; recommend a clean Toolkit project"),
@@ -548,6 +619,14 @@ def _zh2en(msg: str) -> str:
         ("个脚本 GUID 在工程里找不到", " script GUIDs missing from the project"),
         ("共", "total"),
         ("处引用会挂空", " refs would hang"),
+        # --- 通用兜底（列表按长度降序自动排序 短词天然最后替换）---
+        ("失败", "failed"),
+        ("目录", "directory"),
+        ("跳过", "skip"),
+        (" 处", " locations"),
+        ("目标", "target"),
+        ("检查磁盘空间或权限", "check disk space or permissions"),
+        ("个)", " groups)"),
     ]
     out = msg
     for zh, en in tags.items():
@@ -1245,10 +1324,15 @@ class App:
             if len(self.logs) > 1200:  # 防止无上限增长
                 self.logs[: len(self.logs) - 1200] = []
             if hasattr(self, "log_widget"):
-                self.log_widget.configure(state="normal")
-                self.log_widget.insert(tk.END, message + "\n")
-                self.log_widget.see(tk.END)
-                self.log_widget.configure(state="disabled")
+                try:
+                    self.log_widget.configure(state="normal")
+                    self.log_widget.insert(tk.END, message + "\n")
+                    self.log_widget.see(tk.END)
+                    self.log_widget.configure(state="disabled")
+                except tk.TclError:
+                    # 语言切换会销毁重建全部控件（导出中也允许切语言）；
+                    # 旧控件已销毁时只把日志留在 self.logs，build_ui 后统一重画
+                    pass
         self.root.after(0, append)
 
     def tlog(self, message: str) -> None:
