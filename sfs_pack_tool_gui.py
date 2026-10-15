@@ -18,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import UnityPy
 import sfs_project_exporter as prefab_exporter
@@ -75,6 +75,37 @@ TEXT = {
         "translation_none": "翻译 JSON：尚未选择",
         "translation_selected_label": "翻译 JSON：{name}",
         "clear_log": "清空日志",
+        "clear_cache": "清理缓存",
+        "cache_title": "缓存清理",
+        "cache_hint": "勾选要清理的项目后点「立即清理」。带 ★ 的是重要数据（清理后不可恢复）。",
+        "cache_item_stage": "导出暂存目录（下次导出会重建）",
+        "cache_item_tmp": "导出临时残留（异常中断遗留）",
+        "cache_item_ripper": "AssetRipper 下载缓存（下次导出会重新解压）",
+        "cache_item_dedupe": "工程去重备份（导出目录内）",
+        "cache_item_backup": "★ Toolkit 备份目录（合并/修复前的保险）",
+        "cache_item_dist": "★ 历史 EXE 备份（dist/_backup）",
+        "cache_scan_none": "没有发现可清理的缓存。",
+        "cache_confirm": "即将清理 {n} 项，共 {size}。确认继续？",
+        "cache_done": "缓存清理完成：释放 {size}",
+        "cache_busy": "有任务在运行，请等它完成再清理缓存。",
+        "cache_none_selected": "请至少勾选一项。",
+        "progress_idle": "空闲",
+        "progress_export": "一键导出",
+        "progress_strip": "剥离平台",
+        "progress_analyze": "读取包信息",
+        "progress_extract": "提取文本",
+        "progress_write": "写入翻译",
+        "progress_cache": "清理缓存",
+        "busy_running": "⏳ {name} 进行中…（界面操作已临时锁定）",
+        "progress_step_scan": "扫描包信息…",
+        "progress_step_ripper": "AssetRipper 导出工程…",
+        "progress_step_align": "脚本免挂对齐…",
+        "progress_step_shader": "修复空壳着色器…",
+        "progress_step_dedupe": "工程去重…",
+        "progress_step_merge": "生成合并包…",
+        "progress_step_packdata": "并入 Toolkit + PackData…",
+        "progress_step_strip_trim": "剔除多余平台…",
+        "progress_step_strip_write": "写出 .pack…",
         "translator_frame": "汉化处理",
         "author": "汉化作者标识",
         "extract": "提取待翻译文本",
@@ -222,6 +253,37 @@ TEXT = {
         "translation_none": "Translation JSON: none selected",
         "translation_selected_label": "Translation JSON: {name}",
         "clear_log": "Clear log",
+        "clear_cache": "Clear cache",
+        "cache_title": "Cache cleanup",
+        "cache_hint": "Tick the items to remove, then click Clear. Items marked ★ hold important data (not recoverable).",
+        "cache_item_stage": "Export staging dir (rebuilt on next export)",
+        "cache_item_tmp": "Leftover temp exports (from interrupted runs)",
+        "cache_item_ripper": "AssetRipper download cache (re-extracted on next export)",
+        "cache_item_dedupe": "In-project dedupe backups (inside export dirs)",
+        "cache_item_backup": "★ Toolkit backup dir (safety net before merge/repair)",
+        "cache_item_dist": "★ Historical EXE backups (dist/_backup)",
+        "cache_scan_none": "No cache found.",
+        "cache_confirm": "Remove {n} item(s), freeing {size}. Continue?",
+        "cache_done": "Cache cleaned: freed {size}",
+        "cache_busy": "A task is running; wait for it to finish before clearing the cache.",
+        "cache_none_selected": "Tick at least one item.",
+        "progress_idle": "Idle",
+        "progress_export": "Quick Export",
+        "progress_strip": "Strip Platforms",
+        "progress_analyze": "Pack Info",
+        "progress_extract": "Extract Text",
+        "progress_write": "Write Translation",
+        "progress_cache": "Clear Cache",
+        "busy_running": "{name} is running... (UI temporarily locked)",
+        "progress_step_scan": "Scanning pack info...",
+        "progress_step_ripper": "Exporting project via AssetRipper...",
+        "progress_step_align": "Aligning scripts to Toolkit...",
+        "progress_step_shader": "Fixing stub shaders...",
+        "progress_step_dedupe": "Deduping project assets...",
+        "progress_step_merge": "Building merge package...",
+        "progress_step_packdata": "Merging into Toolkit + PackData...",
+        "progress_step_strip_trim": "Dropping unwanted platforms...",
+        "progress_step_strip_write": "Writing .pack...",
         "translator_frame": "Localization",
         "author": "Translator signature:",
         "extract": "Extract translatable text",
@@ -1017,11 +1079,16 @@ def count_bundle_parts(payload: bytes) -> int:
     return sum(1 for obj in environment.objects if obj.type.name == "GameObject")
 
 
-def analyze_pack(input_file: str, translate, log) -> None:
-    """概览 .pack：总体积、各平台 Build 解压体积与部件数量。"""
+def analyze_pack(input_file: str, translate, log, progress=None) -> None:
+    """概览 .pack：总体积、各平台 Build 解压体积与部件数量。
+
+    progress：可选回调 progress(fraction)，逐平台推进（解码最慢的就是它）。
+    """
     if not input_file:
         log(translate("strip_no_pack"))
         return
+    if progress:
+        progress(0.05, "progress_analyze")
     try:
         data = json.loads(Path(input_file).read_text(encoding="utf-8-sig"))
     except Exception as exc:
@@ -1041,6 +1108,10 @@ def analyze_pack(input_file: str, translate, log) -> None:
     total = 0
     build_count = 0
     part_total = 0
+    # 进度按"非空平台"的序号推进（解码耗时几乎都在这些 bundle 上）；
+    # 但遍历仍走全部平台，空值/坏 base64 的平台必须照样打出 build_absent，
+    # 否则包信息里会凭空少几行，用户看不出这个平台到底有没有。
+    candidates = [k for k in BUILD_ORDER if isinstance(data.get(k), str) and data.get(k).strip()]
     for key in BUILD_ORDER:
         payload = decode_build_payload(data.get(key))
         if payload is None:
@@ -1052,16 +1123,22 @@ def analyze_pack(input_file: str, translate, log) -> None:
         # 各平台装的是同一批部件，取最大值而不是累加，否则“共 N 个部件”会被乘上平台数
         part_total = max(part_total, parts)
         log(translate("build_present", plat=PLATFORM_NAMES.get(key, key), size=human_size(len(payload)), parts=parts))
+        if progress and candidates:
+            progress(0.1 + 0.85 * (candidates.index(key) + 1) / len(candidates), "progress_analyze")
+    if progress:
+        progress(1.0, "analyze_done")
     log(translate("analyze_done", builds=build_count, parts=part_total, total=human_size(total)))
 
 
-def strip_pack(input_file: str, output_file: str, platform_keys, translate, log) -> None:
+def strip_pack(input_file: str, output_file: str, platform_keys, translate, log, progress=None) -> None:
     """剥离到目标平台：只保留 platform_keys 中的平台与 CodeAssembly，删除其他平台 Build。
 
     剥离前先扫描包信息（剥离校验）：
     • 所选平台全都不在包里 → 直接拒绝，绝不写出一个不含任何平台的 .pack；
     • 部分不在包里 → 警告并只保留实有的平台；
     • 结果至少保留一个平台 + CodeAssembly。
+
+    progress：可选回调 progress(fraction, label_key)，用于把进度条接到剥离流程上。
     """
     if not input_file:
         log(translate("strip_no_pack"))
@@ -1072,6 +1149,8 @@ def strip_pack(input_file: str, output_file: str, platform_keys, translate, log)
     if not wanted:
         log(translate("strip_fail", error="未指定任何有效平台"))
         return
+    if progress:
+        progress(0.15, "progress_step_scan")
     try:
         data = json.loads(Path(input_file).read_text(encoding="utf-8-sig"))
     except Exception as exc:
@@ -1105,6 +1184,8 @@ def strip_pack(input_file: str, output_file: str, platform_keys, translate, log)
         except OSError:
             pass
     log(translate("strip_start"))
+    if progress:
+        progress(0.45, "progress_step_strip_trim")
     removed = []
     kept = []
     for key in list(data.keys()):
@@ -1123,13 +1204,108 @@ def strip_pack(input_file: str, output_file: str, platform_keys, translate, log)
     if not output_file:
         suffix = "+".join(PLATFORM_NAMES.get(k, k) for k in keep)
         output_file = str(Path(input_file).with_name(f"{Path(input_file).stem}-{suffix}.pack"))
+    if progress:
+        progress(0.75, "progress_step_strip_write")
     try:
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
         Path(output_file).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
         log(translate("strip_fail", error=exc))
         return
+    if progress:
+        progress(1.0, "strip_done")
     log(translate("strip_done", out=output_file, size=human_size(Path(output_file).stat().st_size)))
+
+
+# ---------------------------------------------------------------------------
+# 缓存扫描 / 清理
+# ---------------------------------------------------------------------------
+def _dir_size(path: Path) -> int:
+    """目录占用字节数（软链接/无权限项跳过）。"""
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            try:
+                if entry.is_file() and not entry.is_symlink():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+def scan_cache(toolkit_dir: str = "") -> list[dict]:
+    """扫描可清理的缓存，返回 [{key, label_key, path, size, risky}]。
+
+    分两类：临时/可再生（安全）与重要数据（★，清理后不可恢复，默认不勾选）。
+    """
+    items: list[dict] = []
+    temp_root = Path(tempfile.gettempdir())
+
+    stage = temp_root / "SFS_Pack_Stage"
+    if stage.is_dir():
+        items.append({"key": "stage", "label_key": "cache_item_stage",
+                      "path": stage, "size": _dir_size(stage), "risky": False})
+
+    # AssetRipper 导出用的 sfs_prefab_export_* 临时目录，正常会自动删；
+    # 崩溃/强杀时会残留，占用往往最大
+    leftovers = []
+    try:
+        leftovers = [p for p in temp_root.glob("sfs_prefab_export_*") if p.is_dir()]
+    except OSError:
+        leftovers = []
+    if leftovers:
+        size = sum(_dir_size(p) for p in leftovers)
+        items.append({"key": "tmp", "label_key": "cache_item_tmp",
+                      "path": temp_root, "size": size, "risky": False,
+                      "targets": leftovers})
+
+    runtime_dir = (Path(sys.executable).resolve().parent
+                   if getattr(sys, "frozen", False)
+                   else Path(__file__).resolve().parent)
+    ripper = runtime_dir / ".assetripper"
+    if ripper.is_dir():
+        items.append({"key": "ripper", "label_key": "cache_item_ripper",
+                      "path": ripper, "size": _dir_size(ripper), "risky": False})
+
+    if toolkit_dir:
+        tk = Path(toolkit_dir)
+        dedupe_dirs = [p for p in tk.rglob("_DEDUPE_BACKUP") if p.is_dir()]
+        if dedupe_dirs:
+            items.append({"key": "dedupe", "label_key": "cache_item_dedupe",
+                          "path": dedupe_dirs[0], "size": sum(_dir_size(p) for p in dedupe_dirs),
+                          "risky": True, "targets": dedupe_dirs})
+        backup = tk / "_PackToolBackup"
+        if backup.is_dir():
+            items.append({"key": "backup", "label_key": "cache_item_backup",
+                          "path": backup, "size": _dir_size(backup), "risky": True})
+
+    dist_backup = runtime_dir / "dist" / "_backup"
+    if dist_backup.is_dir():
+        items.append({"key": "dist", "label_key": "cache_item_dist",
+                      "path": dist_backup, "size": _dir_size(dist_backup), "risky": True})
+    return items
+
+
+def clean_cache_items(items: list[dict], keys: set[str]) -> tuple[int, list[str]]:
+    """删除选中的缓存项，返回 (释放字节, 失败说明列表)。"""
+    freed = 0
+    errors: list[str] = []
+    for item in items:
+        if item["key"] not in keys:
+            continue
+        targets = item.get("targets") or [item["path"]]
+        for target in targets:
+            try:
+                size = _dir_size(target)
+                shutil.rmtree(target, ignore_errors=False)
+                freed += size
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                errors.append(f"{target.name}: {exc}")
+    return freed, errors
 
 
 class App:
@@ -1153,6 +1329,12 @@ class App:
         self.strip_platform_vars = {key: tk.BooleanVar(value=key in saved_platforms) for key in PLATFORM_KEYS}
         self.install_var = tk.BooleanVar(value=bool(self.settings.get("install_to_toolkit", False)))
         self.language_var = tk.StringVar()
+        # 进度条 / 忙碌锁：任一异步任务运行时禁用全部操作按钮，避免并发操作
+        self._busy = False
+        self._busy_name = ""
+        self._progress_value = tk.DoubleVar(value=0.0)
+        self._progress_label = tk.StringVar(value="")
+        self._busy_buttons: list[tk.Widget] = []
         # 剥离输出自动命名：勾选平台变化时自动刷新（用户手选过路径就不再动）
         self._strip_auto_name = ""
         set_window_icon(self.root)
@@ -1192,6 +1374,66 @@ class App:
         self.logs.clear()
         self.refresh_logs()
 
+    # ---------------- 清理缓存 ----------------
+    def show_cache_dialog(self) -> None:
+        """扫描缓存并在弹窗里让用户勾选要清理的项目。"""
+        if self._busy:
+            self.log(self.t("cache_busy"))
+            return
+        toolkit_dir = self.toolkit_dir_var.get().strip()
+        items = scan_cache(toolkit_dir)
+        if not items:
+            messagebox.showinfo(self.t("cache_title"), self.t("cache_scan_none"))
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(self.t("cache_title"))
+        win.transient(self.root)
+        win.grab_set()
+        tk.Label(win, text=self.t("cache_hint"), justify="left", wraplength=440).pack(
+            anchor="w", padx=14, pady=(12, 6))
+        body = tk.Frame(win)
+        body.pack(fill="both", expand=True, padx=14)
+        vars_map: dict[str, tk.BooleanVar] = {}
+        for row, item in enumerate(items):
+            # 安全项默认勾选，★ 重要数据默认不勾（避免误删用户的保险）
+            var = tk.BooleanVar(value=not item["risky"])
+            vars_map[item["key"]] = var
+            label = self.t(item["label_key"]) if not item["risky"] else self.t(item["label_key"])
+            text = f"{label}\n    {human_size(item['size'])}   {item['path']}"
+            tk.Checkbutton(body, text=text, variable=var, anchor="w",
+                           justify="left").grid(row=row, column=0, sticky="w", pady=3)
+        tk.Button(win, text=self.t("about_close"), command=win.destroy, width=12).pack(pady=12)
+
+        def do_clean() -> None:
+            keys = {k for k, v in vars_map.items() if v.get()}
+            if not keys:
+                messagebox.showwarning(self.t("cache_title"), self.t("cache_none_selected"))
+                return
+            chosen = [i for i in items if i["key"] in keys]
+            total = sum(i["size"] for i in chosen)
+            if not messagebox.askyesno(
+                self.t("cache_title"),
+                self.t("cache_confirm", n=len(chosen), size=human_size(total)),
+            ):
+                return
+            win.destroy()
+            self.run_async(lambda log: self._clean_cache_worker(chosen, keys, log),
+                           task_key="progress_cache")
+
+        tk.Button(win, text=self.t("clear_cache"), command=do_clean, width=14).pack(pady=(0, 12))
+
+    def _clean_cache_worker(self, chosen: list[dict], keys: set[str], log) -> None:
+        """在后台线程执行删除，避免大目录卡界面。"""
+        freed, errors = clean_cache_items(chosen, keys)
+        for err in errors:
+            log(f"[!] {err}")
+        self.set_progress(1.0, self.t("cache_done", size=human_size(freed)))
+        log(self.t("cache_done", size=human_size(freed)))
+        # messagebox 属于 Tk 调用，必须回主线程弹
+        self._ui(lambda: messagebox.showinfo(
+            self.t("cache_title"), self.t("cache_done", size=human_size(freed))))
+
     def selected_strip_platforms(self) -> list[str]:
         """勾选中的保留平台（按 BUILD_ORDER 稳定排序）。"""
         return [key for key in PLATFORM_KEYS if self.strip_platform_vars[key].get()]
@@ -1204,6 +1446,8 @@ class App:
     def build_ui(self) -> None:
         for child in self.root.winfo_children():
             child.destroy()
+        # 切语言会重建全部控件，按钮列表要跟着重置（否则忙碌锁操作的是已销毁的控件）
+        self._busy_buttons = []
         self.root.title(self.t("window"))
         # 恢复上次关窗时的窗口大小与位置；没有记录（或记录无效）时用默认尺寸
         saved_geo = self.settings.get("geometry")
@@ -1243,8 +1487,16 @@ class App:
         tk.Label(translate_frame, text=self.t("extract_path")).grid(row=1, column=0, sticky="w", pady=(5, 0))
         tk.Entry(translate_frame, textvariable=self.extract_output_var).grid(row=1, column=1, sticky="ew", padx=5, pady=(5, 0))
         tk.Button(translate_frame, text=self.t("select_json_path"), command=self.pick_extract_output, width=14).grid(row=1, column=2, padx=3, pady=(5, 0))
-        tk.Button(translate_frame, text=self.t("extract"), command=lambda: self.run_async(lambda log: extract_texts(self.input_file, self.extract_output_var.get().strip(), self.t, log))).grid(row=2, column=0, padx=4, pady=6)
-        tk.Button(translate_frame, text=self.t("write"), command=lambda: self.run_async(lambda log: write_translation(self.input_file, self.translation_file, self.author_var.get(), self.t, log))).grid(row=2, column=1, sticky="w", padx=5, pady=6)
+        self._register_busy_button(tk.Button(
+            translate_frame, text=self.t("extract"), width=16,
+            command=lambda: self.run_async(
+                lambda log: extract_texts(self.input_file, self.extract_output_var.get().strip(), self.t, log),
+                task_key="progress_extract"))).grid(row=2, column=0, padx=4, pady=6)
+        self._register_busy_button(tk.Button(
+            translate_frame, text=self.t("write"), width=16,
+            command=lambda: self.run_async(
+                lambda log: write_translation(self.input_file, self.translation_file, self.author_var.get(), self.t, log),
+                task_key="progress_write"))).grid(row=2, column=1, sticky="w", padx=5, pady=6)
         translate_frame.columnconfigure(1, weight=1)
 
         export = tk.LabelFrame(self.root, text=self.t("export_frame"), padx=8, pady=8)
@@ -1258,7 +1510,8 @@ class App:
         tk.Label(export, text=self.t("toolkit_hint"), fg="#555555", wraplength=650, justify="left").grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
         tk.Checkbutton(export, text=self.t("install_opt"), variable=self.install_var,
                        command=self.save_user_settings, anchor="w", justify="left").grid(row=3, column=1, sticky="w", padx=5, pady=(7, 0))
-        self.export_btn = tk.Button(export, text=self.t("export"), command=self.start_export, bg="#e6f7ff", width=14)
+        self.export_btn = self._register_busy_button(
+            tk.Button(export, text=self.t("export"), command=self.start_export, bg="#e6f7ff", width=14))
         self.export_btn.grid(row=3, column=2, padx=3, pady=(7, 0))
         # 独立的「修复 Toolkit 空壳着色器·悬空引用」按钮已删除（冗余入口）：
         # 空壳着色器清理与悬空引用自愈由一键导出工程自动完成（repair_toolkit）
@@ -1273,22 +1526,45 @@ class App:
         for _key in PLATFORM_KEYS:
             tk.Checkbutton(plat_box, text=PLATFORM_NAMES[_key], variable=self.strip_platform_vars[_key],
                            command=self._on_platform_toggle).pack(side="left")
-        tk.Button(strip, text=self.t("analyze"), command=lambda: self.run_async(lambda log: analyze_pack(self.input_file, self.t, log)), width=14).grid(row=1, column=2, padx=4, pady=(7, 0))
-        tk.Button(strip, text=self.t("strip"), command=self.start_strip, bg="#ffe9d6", width=20).grid(row=1, column=3, padx=4, pady=(7, 0))
+        self._register_busy_button(tk.Button(
+            strip, text=self.t("analyze"), width=14,
+            command=lambda: self.run_async(
+                lambda log: analyze_pack(
+                    self.input_file, self.t, log,
+                    progress=lambda frac, key="": self.set_progress(frac, self.t(key) if key else "")),
+                task_key="progress_analyze", determinate=True))).grid(row=1, column=2, padx=4, pady=(7, 0))
+        self._register_busy_button(tk.Button(
+            strip, text=self.t("strip"), bg="#ffe9d6", width=20,
+            command=self.start_strip)).grid(row=1, column=3, padx=4, pady=(7, 0))
         tk.Label(strip, text=self.t("select_strip_output")).grid(row=2, column=0, sticky="w", pady=(7, 0))
         tk.Entry(strip, textvariable=self.strip_output_var).grid(row=2, column=1, columnspan=2, sticky="ew", padx=5, pady=(7, 0))
         tk.Button(strip, text=self.t("pick_strip_output"), command=self.pick_strip_output, width=14).grid(row=2, column=3, padx=4, pady=(7, 0))
         strip.columnconfigure(1, weight=1)
 
-        # 日志栏顶部的工具条：清空日志按钮靠右
+        # 进度条 + 状态文字（放在日志栏正上方，切换语言时保留进度语义）
+        progress_bar = tk.Frame(self.root)
+        progress_bar.pack(fill="x", padx=12, pady=(8, 0))
+        self.progress = ttk.Progressbar(progress_bar, variable=self._progress_value,
+                                        maximum=100.0, mode="determinate")
+        self.progress.pack(side="left", fill="x", expand=True)
+        tk.Label(progress_bar, textvariable=self._progress_label, fg="#555555",
+                 anchor="e", width=34).pack(side="right", padx=(8, 0))
+
+        # 日志栏顶部的工具条：清理缓存 / 清空日志按钮靠右
         log_bar = tk.Frame(self.root)
         log_bar.pack(fill="x", padx=12, pady=(6, 0))
+        self._register_busy_button(
+            tk.Button(log_bar, text=self.t("clear_cache"), command=self.show_cache_dialog, width=12)
+        ).pack(side="right", padx=(4, 0))
         tk.Button(log_bar, text=self.t("clear_log"), command=self._clear_log, width=10).pack(side="right")
-        self.log_widget = scrolledtext.ScrolledText(self.root, font=("Consolas", 10), height=16, state="disabled")
+        self.log_widget = scrolledtext.ScrolledText(self.root, font=("Consolas", 10), height=15, state="disabled")
         self.log_widget.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         if not self.logs:
             self.logs.append(self.t("ready"))
         self.refresh_logs()
+        # 重建控件后把忙碌状态补回（导出中切语言的情况）
+        if self._busy:
+            self.set_busy(True, self._busy_name)
         self.build_menubar()
 
     def refresh_logs(self) -> None:
@@ -1333,7 +1609,7 @@ class App:
                     # 语言切换会销毁重建全部控件（导出中也允许切语言）；
                     # 旧控件已销毁时只把日志留在 self.logs，build_ui 后统一重画
                     pass
-        self.root.after(0, append)
+        self._ui(append)
 
     def tlog(self, message: str) -> None:
         """日志翻译包装：英文模式下把 keepalive 内部的中文日志翻成英文。"""
@@ -1341,12 +1617,87 @@ class App:
             message = _zh2en(message)
         self.log(message)
 
-    def run_async(self, operation) -> None:
+    # ---------------- 进度条 / 忙碌锁 ----------------
+    def _ui(self, fn):
+        """把回调丢回主线程执行；窗口已销毁/无主循环时静默忽略。
+
+        后台线程收尾时一定会调到这里（解锁、报进度），此时用户可能已经关了窗口，
+        直接 root.after 会抛 RuntimeError/TclError 让线程带栈退出。
+        """
+        try:
+            return self.root.after(0, fn)
+        except (RuntimeError, tk.TclError):
+            return None
+
+    def _register_busy_button(self, button: tk.Widget) -> tk.Widget:
+        """登记需要被忙碌锁禁用的操作按钮。"""
+        self._busy_buttons.append(button)
+        return button
+
+    def set_busy(self, busy: bool, name: str = "") -> None:
+        """切换忙碌状态：禁用/恢复所有操作按钮（进度条与语言切换始终可用）。"""
+        self._busy = busy
+        self._busy_name = name if busy else ""
+        state = "disabled" if busy else "normal"
+        for button in self._busy_buttons:
+            try:
+                button.configure(state=state)
+            except tk.TclError:
+                # 切语言重建后控件已换新，按钮列表在 build_ui 里会重新登记
+                continue
+        if busy:
+            self._progress_value.set(0.0)
+            self._progress_label.set(self.t("busy_running", name=name))
+            try:
+                self.progress.start(12)      # 未知总长度的任务走动画
+            except tk.TclError:
+                pass
+        else:
+            try:
+                self.progress.stop()
+            except tk.TclError:
+                pass
+            self._progress_value.set(0.0)
+            self._progress_label.set(self.t("progress_idle"))
+
+    def set_progress(self, fraction: float, label: str = "") -> None:
+        """设置确定进度（0~1）。传 label 同时更新右侧状态文字。
+
+        注意：Progressbar 绑定了 variable 时，写 widget["value"] 会被静默忽略
+        （variable 是唯一数据源），必须写 variable。
+        """
+        def apply() -> None:
+            try:
+                self.progress.stop()        # 停掉未定长动画，让位给确定进度
+                self._progress_value.set(max(0.0, min(100.0, fraction * 100.0)))
+                if label:
+                    self._progress_label.set(label)
+            except tk.TclError:
+                pass
+        self._ui(apply)
+
+    def run_async(self, operation, *, task_key: str = "", determinate: bool = False) -> None:
+        """在工作线程跑任务，同时接管进度条与忙碌锁。
+
+        determinate=True 时任务会通过 self.set_progress() 报确定进度；
+        否则进度条持续走动画，结束自动归零。
+        """
+        if self._busy:
+            self.log(self.t("busy_running", name=self._busy_name or self.t("progress_idle")))
+            return
+        name = self.t(task_key) if task_key else self.t("progress_idle")
+        self.set_busy(True, name)
+
         def worker() -> None:
             try:
+                if determinate:
+                    self.set_progress(0.0, name)
                 operation(self.log)
             except Exception as exc:
                 self.log(self.t("processing_failed", error=exc))
+            finally:
+                self._ui(lambda: self.set_busy(False))
+
         threading.Thread(target=worker, daemon=True).start()
 
     def pick_input(self) -> None:
@@ -1481,7 +1832,14 @@ class App:
         if not output:
             output = str(Path(self.input_file).with_name(self.default_strip_output_name()))
         self.save_user_settings()
-        self.run_async(lambda log: strip_pack(self.input_file, output, keys, self.t, log))
+        self.run_async(
+            lambda log: strip_pack(
+                self.input_file, output, keys, self.t, log,
+                progress=lambda frac, key="": self.set_progress(frac, self.t(key) if key else ""),
+            ),
+            task_key="progress_strip",
+            determinate=True,
+        )
 
     def start_export(self) -> None:
         if getattr(self, "_export_busy", False):
@@ -1522,14 +1880,14 @@ class App:
                 # 合并：一键导出同时清理 Toolkit 空壳着色器与悬空引用
                 self.repair_toolkit(log, toolkit_dir, package_dir)
             finally:
-                self.root.after(0, _done)
+                self._ui(_done)
 
         def _done() -> None:
             self._export_busy = False
             if getattr(self, "export_btn", None):
                 self.export_btn.configure(state="normal", text=self.t("export"))
 
-        self.run_async(_run)
+        self.run_async(_run, task_key="progress_export", determinate=True)
 
     def repair_toolkit(self, log, toolkit_dir: str, package_dir: str = "") -> None:
         log(self.t("repair_start"))
@@ -1561,6 +1919,26 @@ class App:
 
 
     def export_project(self, log, output: str, toolkit_dir: str = "", install: bool = False) -> None:
+        # 确定进度分 7 段，按实际耗时分配权重（AssetRipper 导出最慢占大头）
+        steps = [
+            (0.05, "progress_step_scan"),
+            (0.45, "progress_step_ripper"),
+            (0.55, "progress_step_align"),
+            (0.65, "progress_step_shader"),
+            (0.72, "progress_step_dedupe"),
+            (0.80, "progress_step_merge"),
+            (0.92, "progress_step_packdata"),
+        ]
+        step_index = 0
+
+        def advance() -> None:
+            nonlocal step_index
+            if step_index < len(steps):
+                frac, key = steps[step_index]
+                self.set_progress(frac, self.t(key))
+                step_index += 1
+
+        advance()
         log(self.t("export_start"))
         # 硬性约定：解包前先扫一遍包信息（平台包是否齐全 / 是否带自定义脚本 dll / 依赖哪个版本），
         # 先知道包里有什么、再决定走哪条路线，避免导入后才发现脚本挂空、来回返工。
@@ -1578,6 +1956,7 @@ class App:
         previous_log = prefab_exporter.log
         # 走 tlog 而不是原始 log：英文模式下导出器内部的中文日志也会一并翻成英文
         prefab_exporter.log = self.tlog
+        advance()
         try:
             exported_dir = Path(prefab_exporter.export_prefabs(args))
         except Exception as exc:
@@ -1594,6 +1973,7 @@ class App:
 
         # 1) 脚本免挂对齐
         if toolkit_dir and Path(toolkit_dir).is_dir():
+            advance()
             try:
                 import sfs_pack_core as keepalive
                 keepalive.log = self.tlog
@@ -1612,6 +1992,7 @@ class App:
                 log(self.t("log_align_fail", exc=exc))
 
             # 1.5) 自动处理“黑板”：把 AssetRipper 空壳着色器就地换成 Toolkit 真源码
+            advance()
             try:
                 import sfs_pack_core as keepalive
                 srep = keepalive.fix_stub_shaders(
@@ -1641,6 +2022,7 @@ class App:
 
             # 1.85) 工程内去重：移除 X 与 X_0 这类"同物异名"的重复导出资产
             #      （暂存目录复用 / 包内同名重复都会产生），引用统一改指保留的那份
+            advance()
             try:
                 import sfs_pack_core as keepalive
                 keepalive.dedupe_export_assets(
@@ -1669,6 +2051,7 @@ class App:
             if gate_blocked:
                 log(self.t("log_merge_none", error=self.t("log_gate_title")))
             else:
+                advance()
                 try:
                     import sfs_pack_core as keepalive
                     keepalive.log = self.tlog
@@ -1694,9 +2077,11 @@ class App:
                 if not install:
                     log(self.t("install_skipped_opt"))
                 else:
+                    advance()
                     self.install_into_toolkit(log, Path(toolkit_dir), Path(str(mrep["package_dir"])), mrep)
                     # 2.5) 自动生成 PackData 资产 + 统一 AssetBundle 标签：
                     #      并入后用户在 Unity 的 ModBuilder 里选资产+标签即可一键出包
+                    advance()
                     try:
                         import sfs_pack_core as keepalive
                         mod_name = keepalive.mod_folder_name(Path(self.input_file))
@@ -1737,6 +2122,7 @@ class App:
             except Exception as exc:
                 log(self.t("log_verify_fail", exc=exc))
 
+        self.set_progress(1.0, self.t("export_done"))
         log(self.t("export_done"))
 
     def _gate_popup(self, n: int, refs: int, classes: list[str], path: str) -> None:
@@ -1747,7 +2133,7 @@ class App:
                       path=path)
         title = self.t("log_gate_title")
         try:
-            self.root.after(0, lambda: messagebox.showwarning(title, body))
+            self._ui(lambda: messagebox.showwarning(title, body))
         except Exception:
             pass
 
