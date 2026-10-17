@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """SFS Pack Tool 离线回归测试（无需真实 .pack / AssetRipper）。
 
@@ -878,6 +878,329 @@ def test_install_same_asm_reimport_allowed(tmp: Path, r: Result) -> None:
             ka.detect_assembly_conflicts(tk2, pkg2, "Mod A") == [])
 
 
+def test_install_refuses_source_type_clash(tmp: Path, r: Result) -> None:
+    """P1-2：本次的 .cs 源码与 Toolkit 已有脚本撞同名类型 → 拒绝（Unity 会报 CS0101）。
+
+    只查 .cs，不查 dll：两个预编译 dll 里的同名类型分属不同程序集，Unity 只做引用，
+    不会报 CS0101——按 dll 类型名拦会误伤（三个真实模组两两之间短名就有重合）。
+    """
+    print("\n=== 4f. 源码类型撞名：拒绝并入（P1-2 · CS0101）===")
+    spec = importlib.util.spec_from_file_location("gui_src", BUILD_KIT / "sfs_pack_tool_gui.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    import sfs_pack_core as ka
+
+    class _Shell:
+        _ui = staticmethod(lambda fn: fn())
+
+        def t(self, key, **kw):
+            return f"{key}|{module.TEXT['zh'][key].format(**kw)}"
+
+        def _assembly_conflict_popup(self, conflicts, package_dir):
+            return module.App._assembly_conflict_popup(self, conflicts, package_dir)
+
+        def _source_conflict_popup(self, conflicts, package_dir):
+            return module.App._source_conflict_popup(self, conflicts, package_dir)
+
+    shown: list[tuple[str, str]] = []
+
+    class _FakeMB:
+        @staticmethod
+        def showwarning(title, body, **kw):
+            shown.append((title, body))
+
+    module.messagebox = _FakeMB
+
+    def cs_file(path: Path, ns: str, outer: str, inner: str) -> None:
+        """按 ILSpy 反编译产物的排版写 .cs（类型必须各占一行，declared_types 逐行匹配）。"""
+        write(path, (
+            "using System;\n"
+            "namespace %s\n{\n"
+            "    public class %s\n    {\n"
+            "        public class %s\n        {\n        }\n"
+            "    }\n}\n" % (ns, outer, inner)
+        ))
+
+    # Toolkit 里已有 ModA 走"反编译源码"路线留下的 HeatModule.cs
+    toolkit = make_toolkit(tmp / "ToolkitSrc")
+    cs_file(toolkit / "Assets" / "Scripts" / "ModCode" / "Heat.cs", "MorePartsMod", "HeatModule", "Helper")
+    package = tmp / "PkgSrc"
+    cs_file(package / "Assets" / "Scripts" / "ModCode" / "Heat.cs", "MorePartsMod", "HeatModule", "Helper")
+    # 同名但命名空间不同 → 合法，不该拦
+    cs_file(package / "Assets" / "Scripts" / "ModCode" / "Other.cs", "OtherMod", "HeatModule", "Helper")
+    # 同名嵌套在不同外层类下 → 合法，不该拦（declared_types 只取顶层）
+    cs_file(package / "Assets" / "Scripts" / "ModCode" / "Nested.cs", "MorePartsMod", "Other", "HeatModule")
+    # partial 分片共存是合法的 → 不该拦
+    write(package / "Assets" / "Scripts" / "ModCode" / "Split.cs",
+          "namespace MorePartsMod\n{\n    public partial class Split\n    {\n    }\n}\n")
+    write(package / "Assets" / "Scripts" / "ModCode" / "Split2.cs",
+          "namespace MorePartsMod\n{\n    public partial class Split\n    {\n    }\n}\n")
+
+    conflicts = ka.detect_source_type_conflicts(toolkit, package)
+    r.check("核心预检只报 1 处撞名（嵌套/异命名空间/partial 都不算）", len(conflicts) == 1)
+    if conflicts:
+        c = conflicts[0]
+        r.check("点名类型全限定名 + 两边文件", c["type"] == "MorePartsMod.HeatModule"
+                and c["incoming"].endswith("Heat.cs") and c["existing"].endswith("Heat.cs")
+                and c["where"] == "toolkit")
+
+    logs: list[str] = []
+    merged = module.App.install_into_toolkit(
+        _Shell(), logs.append, toolkit, package, {"ok": True, "parts_subfolder": "Mod B"})
+    for line in logs:
+        print("   ", line)
+    r.check("并入被拒（返回 False）", merged is False)
+    r.check("日志点名类型全限定名", any("MorePartsMod.HeatModule" in x for x in logs))
+    r.check("弹了一个窗", len(shown) == 1)
+    if shown:
+        title, body = shown[0]
+        print("    --- 弹窗标题:", title)
+        for line in body.splitlines()[:5]:
+            print("    |", line)
+        r.check("弹窗点名撞名类型", "MorePartsMod.HeatModule" in body)
+        r.check("弹窗说明这是 CS0101 并说明 dll 不拦", "CS0101" in body and "dll" in body)
+
+    # 合法的一侧：两个 dll 同名类型不拦（P0-1 只管文件名，不管类型名）
+    tk2 = make_toolkit(tmp / "ToolkitDllPair")
+    (tk2 / "Assets" / "Plugins").mkdir(parents=True, exist_ok=True)
+    (tk2 / "Assets" / "Plugins" / "Helper.dll").write_bytes(b"MZ_HELPER_OLD")
+    write(tk2 / "Assets" / "Plugins" / "Helper.dll.meta", unity_meta("5" * 32))
+    pk2 = tmp / "PkgDllPair"
+    (pk2 / "Assets" / "Plugins").mkdir(parents=True, exist_ok=True)
+    (pk2 / "Assets" / "Plugins" / "Other.dll").write_bytes(b"MZ_OTHER")
+    write(pk2 / "Assets" / "Plugins" / "Other.dll.meta", unity_meta("6" * 32))
+    r.check("不同名 dll 不因类型名被拦（预检只管 .cs）",
+            ka.detect_source_type_conflicts(tk2, pk2) == [])
+
+    # 包内自撞：一份包里两个 .cs 定义同一个类型 → 同样是 CS0101
+    pk3 = tmp / "PkgSelfClash"
+    write(pk3 / "Assets" / "Scripts" / "ModCode" / "A.cs",
+          "namespace Dup\n{\n    public class Same\n    {\n    }\n}\n")
+    write(pk3 / "Assets" / "Scripts" / "ModCode" / "B.cs",
+          "namespace Dup\n{\n    public class Same\n    {\n    }\n}\n")
+    tk3 = make_toolkit(tmp / "ToolkitSelfClash")
+    self_conflicts = ka.detect_source_type_conflicts(tk3, pk3)
+    r.check("包内自撞也能查出来（where=package）",
+            len(self_conflicts) == 1 and self_conflicts[0]["type"] == "Dup.Same"
+            and self_conflicts[0]["where"] == "package")
+
+
+def test_scan_reports_unreliable_custom_classes(tmp: Path, r: Result) -> None:
+    """P1-1：自定义类判定退化时必须**说得出原因**，且 GUI 要弹窗提醒用户。"""
+    print("\n=== 4g. 自定义类判定退化要可见（P1-1）===")
+    spec = importlib.util.spec_from_file_location("gui_scan", BUILD_KIT / "sfs_pack_tool_gui.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    import sfs_pack_core as ka
+
+    # 装一个"只能读出类名、读不出 m_AssemblyName"的假 UnityPy → 触发退化
+    fake = tmp / "stubmod_noasm"
+    write(fake / "UnityPy.py", (
+        "class _Obj:\n"
+        "    def __init__(self, cls):\n"
+        "        self.type = type('T', (), {'name': 'MonoScript'})()\n"
+        "        self._cls = cls\n"
+        "    def read(self):\n"
+        "        return type('MS', (), {'m_ClassName': self._cls})()\n"
+        "class _Env:\n"
+        "    def __init__(self, objs): self.objects = objs\n"
+        "def load(raw):\n"
+        "    return _Env([_Obj(c) for c in ['Part', 'Base', 'HeatModule']])\n"
+    ))
+    # UnityPy 会被 import 缓存：换桩必须同时踢掉缓存，否则用的还是上一个桩
+    sys.path.insert(0, str(fake))
+    sys.modules.pop("UnityPy", None)
+    try:
+        toolkit = make_toolkit(tmp / "ToolkitScan")
+        pack = tmp / "scan.pack"
+        write(pack, json.dumps({"WindowsBuild": base64.b64encode(b"UnityFS-fake").decode()}))
+
+        rep = ka.scan_pack(pack, toolkit, log=lambda *_: None)
+        r.check("退化时 custom_source 不是 assembly_name",
+                rep.get("custom_source") != "assembly_name")
+        r.check("custom_reliable=False（GUI 据此弹窗）", rep.get("custom_reliable") is False)
+        r.check("给出可读的退化原因（不是空串）", bool(str(rep.get("custom_reason") or "").strip()))
+        r.check("warnings 里点名了「可能把原版类算成自定义类」",
+                any("自定义类判定不可靠" in w and "原版类" in w for w in rep.get("warnings", [])))
+
+        own, reason = ka.custom_monoscript_classes_diagnose(pack)
+        r.check("退化时自定义类取空集（宁可不可判定也不猜）", own == set() and bool(reason))
+    finally:
+        sys.modules.pop("UnityPy", None)
+        sys.path.remove(str(fake))
+
+    # GUI：拿到不可靠的扫描结果 → 日志留痕 + 弹窗（不能只埋日志）
+    class _Shell:
+        _ui = staticmethod(lambda fn: fn())
+        t = staticmethod(lambda key, **kw: f"{key}|{module.TEXT['zh'][key].format(**kw)}")
+
+    shown: list[tuple[str, str]] = []
+
+    class _FakeMB:
+        @staticmethod
+        def showwarning(title, body, **kw):
+            shown.append((title, body))
+
+        @staticmethod
+        def showinfo(title, body, **kw):
+            shown.append((title, body))
+
+    module.messagebox = _FakeMB
+    logs: list[str] = []
+    module.App._after_scan_notices(_Shell(), rep, logs.append)
+    r.check("日志留了一行醒目提示", any("scan_unreliable_log" in x for x in logs))
+    r.check("弹窗提醒用户判定不可靠", len(shown) == 1
+            and module.TEXT["zh"]["scan_unreliable_title"] in shown[0][0])
+    r.check("弹窗正文点明可能把原版类算成自定义类",
+            "原版类" in shown[0][1] and "Toolkit" in shown[0][1])
+
+    # 判定可信时不该打扰用户
+    shown.clear()
+    logs2: list[str] = []
+    good = dict(rep)
+    good["custom_reliable"] = True
+    good["custom_reason"] = ""
+    good["code_assembly"] = {"present": False, "bytes": 0, "is_pe": False}
+    module.App._after_scan_notices(_Shell(), good, logs2.append)
+    r.check("判定可信 + 无 dll 时完全不打扰", not shown and not logs2)
+
+    # P2-1：包带 dll 但没装 ilspycmd → 明确提示（不阻断）
+    import sfs_pack_core as ka2
+    real_find = ka2.find_ilspy
+    ka2.find_ilspy = lambda: None
+    try:
+        shown.clear()
+        logs3: list[str] = []
+        with_dll = dict(good)
+        with_dll["code_assembly"] = {"present": True, "bytes": 128, "is_pe": True}
+        module.App._after_scan_notices(_Shell(), with_dll, logs3.append)
+        r.check("缺 ilspycmd 时弹窗给出安装办法",
+                len(shown) == 1 and "ilspycmd" in shown[0][1]
+                and "dotnet tool install -g ilspycmd" in shown[0][1])
+        r.check("缺 ilspycmd 不阻断导出（只提示）", logs3 == [])
+    finally:
+        ka2.find_ilspy = real_find
+
+
+def test_ilspy_hint_actionable(tmp: Path, r: Result) -> None:
+    """P2-1：ilspycmd 缺失时不能只打一行日志，得告诉用户怎么装。"""
+    print("\n=== 4h. 缺 ilspycmd 要给出可操作提示（P2-1）===")
+    import sfs_pack_core as ka
+
+    hint = ka.ilspy_hint()
+    r.check("提示里带安装命令", "dotnet tool install -g ilspycmd" in hint)
+    r.check("提示里给 dnSpy 备选", "dnSpy" in hint)
+
+    real_find = ka.find_ilspy
+    ka.find_ilspy = lambda: None
+    try:
+        logs: list[str] = []
+        got = ka.decompile_assembly(tmp / "x.dll", tmp / "out", logs.append)
+    finally:
+        ka.find_ilspy = real_find
+    joined = " ".join(logs)
+    r.check("缺工具时返回 None", got is None)
+    r.check("日志说明不影响导入与出包（别让人以为坏了）", "不影响导入与出包" in joined)
+    r.check("日志带安装命令", "dotnet tool install -g ilspycmd" in joined)
+
+
+def test_stock_assembly_suffix_not_misread_as_custom(tmp: Path, r: Result) -> None:
+    """回归：真包里 m_AssemblyName 是 `Assembly-CSharp.dll`（**带 .dll**）。
+
+    曾经直接拿原串比 `STOCK_ASSEMBLY_NAMES`（里面是不带后缀的纯名），结果**每个原版类
+    都被判成 mod 自定义类**。这条链的下游后果就是 2026-09-18 那次事故：
+    原版类若因 Toolkit 版本不匹配而查不到源码，就落进 `restore_custom_scripts` 的
+    removable → AssetRipper stub 被删 → prefab 指向的 GUID 消失 → 原版脚本全挂。
+    当时归咎于"判定退化"，实际权威路径（m_AssemblyName）一样中招。
+    """
+    print("\n=== 4i. 原版程序集带 .dll 后缀不得误判成自定义类（P1-1 事故链）===")
+    spec = importlib.util.spec_from_file_location("gui_stock", BUILD_KIT / "sfs_pack_tool_gui.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    import sfs_pack_core as ka
+
+    r.check("带 .dll 后缀判为原版", ka._is_stock_assembly("Assembly-CSharp.dll"))
+    r.check("带 .dll 后缀（firstpass）判为原版", ka._is_stock_assembly("Assembly-CSharp-firstpass.dll"))
+    r.check("不带后缀仍判为原版（老包形态）", ka._is_stock_assembly("Assembly-CSharp"))
+    r.check("大小写不敏感", ka._is_stock_assembly("ASSEMBLY-CSHARP.DLL"))
+    r.check("mod 自己的 dll 不判为原版", not ka._is_stock_assembly("InterplanetaryModule.dll"))
+    r.check("空串不判为原版", not ka._is_stock_assembly(""))
+
+    # 造一个"能读出 m_AssemblyName 且带 .dll 后缀"的假 UnityPy
+    fake = tmp / "stubmod_asmname"
+    write(fake / "UnityPy.py", (
+        "class _Obj:\n"
+        "    def __init__(self, cls, asm):\n"
+        "        self.type = type('T', (), {'name': 'MonoScript'})()\n"
+        "        self._cls, self._asm = cls, asm\n"
+        "    def read(self):\n"
+        "        return type('MS', (), {'m_ClassName': self._cls, 'm_AssemblyName': self._asm})()\n"
+        "class _Env:\n"
+        "    def __init__(self, objs): self.objects = objs\n"
+        "def load(raw):\n"
+        "    return _Env([_Obj('StockA', 'Assembly-CSharp.dll'),\n"
+        "                 _Obj('StockB', 'Assembly-CSharp.dll'),\n"
+        "                 _Obj('HeatModule', 'MorePartsMod.dll')])\n"
+    ))
+    # UnityPy 会被 import 缓存：换桩必须同时把已缓存的模块踢掉，否则用的还是上一个桩
+    sys.path.insert(0, str(fake))
+    sys.modules.pop("UnityPy", None)
+    try:
+        toolkit = make_toolkit(tmp / "ToolkitStock")
+        pack = tmp / "stock.pack"
+        write(pack, json.dumps({"WindowsBuild": base64.b64encode(b"UnityFS-fake").decode()}))
+
+        rep = ka.scan_pack(pack, toolkit, log=lambda *_: None)
+        custom = rep.get("custom_classes") or []
+        r.check("只有 dll 里的类算自定义类", sorted(custom) == ["HeatModule"])
+        r.check("原版类没被算进去（StockA/StockB 缺席）",
+                "StockA" not in custom and "StockB" not in custom)
+        r.check("判定仍为可信（走权威路径，不是退化）", rep.get("custom_reliable") is True)
+        r.check("custom_source 是 assembly_name", rep.get("custom_source") == "assembly_name")
+
+        # 确认事故链断掉：原版类即使"在 Toolkit 里查不到"，也不该进 removable
+        stock_missing = ["StockA", "StockB"]      # 原版类但不在 Toolkit 里
+        own = ka.custom_monoscript_classes(pack)
+        toolkit_names = set()                      # Toolkit 里没有 StockA/StockB
+        removable = {c for c in own if c in set(stock_missing) and c not in toolkit_names}
+        r.check("原版类不会被判成可删 stub（事故链已断）", removable == set())
+    finally:
+        sys.modules.pop("UnityPy", None)
+        sys.path.remove(str(fake))
+
+    # 纯原版包：权威判定为"确认无自定义类"，不该标成退化口径
+    fake2 = tmp / "stubmod_onlystock"
+    write(fake2 / "UnityPy.py", (
+        "class _Obj:\n"
+        "    def __init__(self, cls):\n"
+        "        self.type = type('T', (), {'name': 'MonoScript'})()\n"
+        "        self._cls = cls\n"
+        "    def read(self):\n"
+        "        return type('MS', (), {'m_ClassName': self._cls,\n"
+        "                             'm_AssemblyName': 'Assembly-CSharp.dll'})()\n"
+        "class _Env:\n"
+        "    def __init__(self, objs): self.objects = objs\n"
+        "def load(raw):\n"
+        "    return _Env([_Obj('StockA'), _Obj('StockB')])\n"
+    ))
+    sys.path.insert(0, str(fake2))
+    sys.modules.pop("UnityPy", None)
+    try:
+        only_stock = tmp / "stock_only.pack"
+        write(only_stock, json.dumps({"WindowsBuild": base64.b64encode(b"UnityFS-fake").decode()}))
+        rep2 = ka.scan_pack(only_stock, toolkit, log=lambda *_: None)
+        r.check("纯原版包：确认无自定义类", rep2.get("custom_classes") == [])
+        r.check("纯原版包：标为权威结论而非退化口径",
+                rep2.get("custom_source") == "assembly_name(确认无自定义类)"
+                and rep2.get("custom_reliable") is True)
+    finally:
+        sys.modules.pop("UnityPy", None)
+        sys.path.remove(str(fake2))
+
+
 def test_merge_keeps_mod_dll(tmp: Path, r: Result) -> None:
     print("\n=== 5. 合并包必须携带 mod 自有程序集(DLL) ===")
     import sfs_pack_core as ka
@@ -1281,6 +1604,10 @@ def main() -> int:
         test_install_replaces_stale_guid(tmp, r)
         test_install_refuses_assembly_conflict(tmp, r)
         test_install_same_asm_reimport_allowed(tmp, r)
+        test_install_refuses_source_type_clash(tmp, r)
+        test_scan_reports_unreliable_custom_classes(tmp, r)
+        test_ilspy_hint_actionable(tmp, r)
+        test_stock_assembly_suffix_not_misread_as_custom(tmp, r)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("\n" + ("ALL PASS" if r.ok else "SOME FAILED"))

@@ -288,6 +288,24 @@ def collect_monoscript_classes(pack_path: Path, platforms: tuple[str, ...] = PRE
 STOCK_ASSEMBLY_NAMES = {"assembly-csharp", "assembly-csharp-firstpass", "assembly-csharp-editor"}
 
 
+def _is_stock_assembly(asm: str) -> bool:
+    """m_AssemblyName 是否指向游戏自身程序集（原版类）。
+
+    **必须先剥掉 `.dll` 后缀再比**——真实 .pack 里 UnityPy 读出来的是
+    `Assembly-CSharp.dll`（带后缀；实测三个真实模组共 88 个原版 MonoScript 全是
+    这个形态），而 STOCK_ASSEMBLY_NAMES 里是不带后缀的纯名。直接拿原串去比会把
+    **每一个原版类**都判成"mod 自定义类"。
+
+    那个误判的下游后果正是 2026-09-18 那次事故的机制：
+    `restore_custom_scripts()` 里 removable = own ∩ unresolved ∩ (不在 Toolkit)，
+    一旦某个原版类因版本不匹配在 Toolkit 里查不到，它就落进 removable，
+    AssetRipper 生成的 stub 被删 → prefab 指向的 GUID 消失 → 原版脚本全挂。
+    当时归咎于"判定退化"，实际上**权威路径（m_AssemblyName）也一样中招**，
+    所以这里必须归一化，不能直接拿原串比集合。
+    """
+    return asm.strip().lower().removesuffix(".dll").removesuffix(".exe") in STOCK_ASSEMBLY_NAMES
+
+
 def collect_monoscript_assemblies(pack_path: Path, platforms: tuple[str, ...] = PRE_BUILD_KEYS) -> dict[str, str]:
     """取包内 MonoScript 的 {类名: m_AssemblyName}。
 
@@ -331,11 +349,39 @@ def collect_monoscript_assemblies(pack_path: Path, platforms: tuple[str, ...] = 
 
 def custom_monoscript_classes(pack_path: Path) -> set[str]:
     """包内真正由 mod 自带 dll 提供的类名（排除 Assembly-CSharp 里的原版类）。"""
+    return custom_monoscript_classes_diagnose(pack_path)[0]
+
+
+def custom_monoscript_classes_diagnose(pack_path: Path) -> tuple[set[str], str]:
+    """同 `custom_monoscript_classes`，但**额外返回退化原因**（P1-1 可观测性）。
+
+    为什么必须带原因：`own` 为空有两种完全不同的成因，处理方式也不同——
+    1. 连 MonoScript 都没读出来（UnityPy 缺字段 / bundle 异常）→ 程序集信息无从谈起；
+    2. 类名读到了、但 `m_AssemblyName` 全为空 → 类名集合是对的，只是"哪些是自定义的"
+       这一层判不出来。
+    两者都让 `scan_pack` 退化成"包内类名 − Toolkit 类名"，而那种口径会把**原版类
+    误判成自定义类**（Toolkit 版本对不上时原版类查不到）。铁律是宁可不可判定也不猜，
+    所以退化本身是安全的，但**必须让用户看见**——否则他不知道后续判断不可靠。
+
+    返回 (自定义类集合, 退化原因；未退化时为空串)。
+    """
     try:
         mapping = collect_monoscript_assemblies(pack_path)
-    except Exception:
-        return set()
-    return {cls for cls, asm in mapping.items() if asm and asm.lower() not in STOCK_ASSEMBLY_NAMES}
+    except Exception as exc:
+        return set(), f"未能读出 MonoScript 的程序集信息（{type(exc).__name__}）"
+    if not mapping:
+        return set(), "未能读出任何 MonoScript 的程序集信息"
+    named = {cls for cls, asm in mapping.items() if asm}
+    own = {cls for cls, asm in mapping.items() if asm and not _is_stock_assembly(asm)}
+    if own:
+        return own, ""
+    if named:
+        # 类名有、程序集名有，但全都是原版程序集 → 这不是退化，是"确实没有自定义类"
+        return set(), ""
+    return set(), (
+        f"读到了 {len(mapping)} 个 MonoScript 类名 但都没有 m_AssemblyName 字段"
+        f"（UnityPy 未能解析该字段）无法区分自定义类与原版类"
+    )
 
 
 def collect_monoscript_pathids(pack_path: Path, platforms: tuple[str, ...] = PRE_BUILD_KEYS) -> dict[int, tuple[str, str]]:
@@ -948,17 +994,31 @@ def scan_pack(pack_path: Path, toolkit_root=None, log=None) -> dict:
     result["classes"] = sorted(classes)
     # 自定义类以 m_AssemblyName 判定（见 custom_monoscript_classes 的说明）；
     # 拿不到程序集信息时才退化成"包内类名 - Toolkit 类名"，并标注来源避免误判。
-    own = custom_monoscript_classes(pack_path)
+    own, degrade_reason = custom_monoscript_classes_diagnose(pack_path)
+    # custom_reliable = 这次判定**没有退化**。own 为空不一定是退化：包里确实没有
+    # 自定义类时 reason 也是空的，那种情况仍然算可信（GUI 据此决定要不要提醒用户）。
+    result["custom_reliable"] = not degrade_reason
+    result["custom_reason"] = degrade_reason
+    native = toolkit_script_classes(toolkit_root) if toolkit_root else set()
     if own:
         result["custom_classes"] = sorted(own)
         result["custom_source"] = "assembly_name"
-    elif toolkit_root:
-        native = toolkit_script_classes(toolkit_root)
-        result["custom_classes"] = sorted(set(classes) - native)
-        result["custom_source"] = "minus_toolkit(可能含原版类)"
+    elif not degrade_reason:
+        # 权威判定得出的结论是「本包确实没有自定义类」——这不是退化，别标成退化口径，
+        # 否则 route 会被误导成 manual、custom_classes 还会平白多出一堆原版类。
+        result["custom_classes"] = []
+        result["custom_source"] = "assembly_name(确认无自定义类)"
     else:
-        result["custom_classes"] = sorted(classes)
-        result["custom_source"] = "all(未判定)"
+        result["custom_classes"] = sorted(set(classes) - native) if toolkit_root else sorted(classes)
+        result["custom_source"] = "minus_toolkit(可能含原版类)" if toolkit_root else "all(未判定)"
+        if degrade_reason:
+            # P1-1：退化本身不会造成破坏（后续一律按"不可判定"保守处理），但用户必须知道，
+            # 否则他会把"退化口径下多出来的原版类"当成 mod 自定义类。
+            warnings.append(
+                f"自定义类判定不可靠（{degrade_reason}）已退化为"
+                f"「{'包内类名 − Toolkit 类名' if toolkit_root else '包内全部类名'}」"
+                f"这份口径**可能把原版类算成自定义类** 后续自动修复可能不完整"
+            )
 
     # 4) 建议路线
     custom: list = result["custom_classes"]
@@ -998,11 +1058,17 @@ def find_ilspy() -> str | None:
     return None
 
 
+def ilspy_hint() -> str:
+    """ilspycmd 缺失时给用户看的话（P2-1：原来只打一行日志，用户以为功能坏了）。"""
+    return "如需查看/修改模组自定义脚本 请安装 ILSpy 命令行工具 dotnet tool install -g ilspycmd 或用 dnSpy 手动反编译"
+
+
 def decompile_assembly(dll: Path, out_dir: Path, log) -> Path | None:
     """调 ilspycmd 把 DLL 反编译成 .cs 工程目录，失败返回 None。"""
     tool = find_ilspy()
     if not tool:
-        log("[自定义] [!] 未找到 ilspycmd 跳过自动反编译")
+        log("[自定义] [!] 未找到 ilspycmd 已跳过自动反编译 不影响导入与出包 只是看不到源码。 "
+            + ilspy_hint())
         return None
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1521,7 +1587,7 @@ def align_scripts_to_toolkit(
         if not cls or cls == "<冲突>" or cls in imported_toolkit_guid:
             continue
         asm = str(rec["assembly"] or "")
-        if not asm or asm.lower() in STOCK_ASSEMBLY_NAMES:
+        if not asm or _is_stock_assembly(asm):
             continue
         dll_guid = custom_guid_target.get(asm) or custom_guid_target.get(asm + ".dll")
         if dll_guid and dll_guid != g:
@@ -1938,6 +2004,73 @@ def detect_assembly_conflicts(
             "incoming_owner": incoming_owner or _mod_owner_of_guid(pkg_assets, incoming_guid),
             "existing_path": str(dest),
         })
+    return conflicts
+
+
+def _solid_declared_types(cs_files) -> dict[str, list[Path]]:
+    """收集这些 .cs 里**非 partial 的顶层类型** → {全限定名: [声明它的文件]}。
+
+    只取顶层：不同外层类里的同名嵌套类型是合法的，算进来会误判（与 `declared_types`
+    的口径保持一致）。只取非 partial：多个 partial 分片跨文件共存是合法定义。
+    """
+    out: dict[str, list[Path]] = {}
+    for cs in cs_files:
+        try:
+            for fq, partial in declared_types(Path(cs)):
+                if not partial:
+                    out.setdefault(fq, []).append(Path(cs))
+        except OSError:
+            continue
+    return out
+
+
+def detect_source_type_conflicts(toolkit_root: Path, package_dir: Path) -> list[dict]:
+    """预检：本次要并入的 `.cs` 源码与 Toolkit 里已有的 `.cs` 撞了同名类型（P1-2）。
+
+    **这里查的是源码，不是 dll**——CS0101 只在"同一个编译单元里出现两次定义"时发生：
+    - `.cs` × `.cs`：两个文件都会被编译进 Assembly-CSharp → 真的报 CS0101，整个模组加载不了；
+    - `.dll` × `.dll`：两个预编译程序集各自编译、Unity 只做引用，**不会**报 CS0101
+      （同名类型分属不同程序集，本就可以共存）。所以按 dll 类型名拦是拦错了对象，
+      见 `待解决问题.md` P1-2 的更正说明。
+
+    真实触发路径：dll 没被认成插件时 `restore_custom_scripts()` 会退回"反编译源码接回"，
+    把 .cs 写进 `Assets/Scripts/ModCode/`。两个都走这条路的模组就会在同一份 Toolkit
+    里各留一份同名类型的 .cs —— 导入第二个时工具毫无察觉，Unity 打开才炸。
+
+    判据与 `find_duplicate_types` 对齐：全限定名 + 非 partial + 文件不同。
+
+    返回 [{type, incoming, existing, where}]；空列表表示没有源码撞名。
+    """
+    tk_assets = Path(toolkit_root) / "Assets"
+    pkg_assets = Path(package_dir) / "Assets"
+    if not tk_assets.is_dir() or not pkg_assets.is_dir():
+        return []
+    incoming = _solid_declared_types(sorted(pkg_assets.rglob("*.cs")))
+    if not incoming:
+        return []
+    conflicts: list[dict] = []
+    for label, other, other_root in (
+        ("toolkit", _solid_declared_types(sorted(tk_assets.rglob("*.cs"))), tk_assets),
+        ("package", _solid_declared_types(sorted(pkg_assets.rglob("*.cs"))), pkg_assets),
+    ):
+        for fq, files in sorted(incoming.items()):
+            if fq not in other:
+                continue
+            for src in files:
+                # 包内互撞时同一份文件会与自己"撞"，跳过自己
+                others = [p for p in other[fq] if p != src]
+                if not others:
+                    continue
+                # 每个(来源, 类型)只报一条：同一个类在两个文件里互撞时不必报两遍
+                if any(c["type"] == fq and c["where"] == label for c in conflicts):
+                    break
+                conflicts.append({
+                    "type": fq,
+                    "incoming": src.relative_to(pkg_assets).as_posix(),
+                    "existing": others[0].relative_to(other_root).as_posix(),
+                    "where": label,
+                })
+                break
     return conflicts
 
 

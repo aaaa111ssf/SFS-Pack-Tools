@@ -149,6 +149,11 @@ TEXT = {
         "install_asm_conflict": "[安装] [!] 拒绝并入 Toolkit：已有内容不同的同名程序集 {names}（一个文件都没写）详见下方弹窗",
         "install_asm_conflict_item": "[安装] [!] 程序集 {name}（{rel}）已被占用：Toolkit 里是 {old_owner} 的程序集（guid {old_guid}），本次要装的是 {new_owner} 的（guid {new_guid}）",
         "install_asm_conflict_scan_fail": "[安装] [!] 同名程序集预检失败（{error}）已保守拒绝并入 以免顶掉 Toolkit 里已有的程序集 请重试或反馈",
+        "install_src_conflict": "[安装] [!] 拒绝并入 Toolkit：本次的源码与 Toolkit 里已有的脚本撞了同名类型（CS0101 会让整个模组加载不了）详见下方弹窗",
+        "install_src_conflict_item": "[安装] [!] 类型 {type} 被定义了两次：本次 {incoming} ↔ 既有 {existing}",
+        "install_src_conflict_scan_fail": "[安装] 源码撞名预检失败 {error} 继续按原流程并入",
+        "install_src_conflict_title": "源码类型撞名 会报 CS0101 已拒绝合并",
+        "install_src_conflict_body": "本次要并入的源码里，有类型名和 Toolkit 里已有的脚本撞了。Unity 会把这些 .cs 一起编译进同一个程序集，于是报 **CS0101 类型重复定义**，整个模组加载不了。\n\n{list}\n\n怎么办：\n• 如果两边其实是同一个模组（重复导入），删掉 Toolkit 里旧的那份 .cs 再导入即可。\n• 如果是两个不同的模组：一份 Toolkit 的同一个程序集里放不下两份同名类型，请让其中一个模组作者改类名，或把其中一个模组的自定义脚本改成 dll 方式提供。\n• 注意这只查源码（.cs）。两个 **dll** 里的同名类型不会报 CS0101（预编译程序集各自独立），所以工具不拦那种情况。\n\n合并包仍在原处：{path}",
         "install_asm_conflict_title": "同名程序集冲突 已拒绝合并",
         "install_asm_conflict_scan_fail_body": "工具没能完成「同名程序集」预检（原因见日志），已保守拒绝把合并包并入 Toolkit，一个文件都没写。\n\n注意：这**不是**发现了冲突，而是预检自己判不准。这道预检防的是「后装的模组把 Toolkit 里已有的程序集静默顶掉、让先装模组的部件脚本全部 missing script」。判不准时宁可停下报错，也不放行去赌一把。\n\n请重试一次；若仍失败，请把日志里那条错误连同本弹窗一起反馈。\n\n合并包仍在原处，可自行处理：{path}",
         "install_asm_conflict_body": "Toolkit 里已经有**内容不同**的同名程序集，已拒绝把本次合并包并进去（一个文件都没写）。\n\n{list}\n\n程序集文件名不能改：Unity 的 MonoScript 里 m_AssemblyName 就是它，改了 Unity 就认不出里面的类。两个模组的 dll 撞名时只有先装的能保住，继续导入会让先装那个模组的部件脚本全部 missing script。\n\n怎么办：\n• 一份 Toolkit 目前只放得下一份 mod 程序集。要同时用两个带自定义脚本的模组，请自行把两份 dll 合成一份（第二个 dll 里的类要改名，否则 Unity 报 CS0101 类型重复定义），再走本工具导入。\n• 只想用一个：把先装那个模组的部件 prefab 与 Assets/Plugins 下的 dll 及 .meta 删干净，再导入本模组。\n• 如果这两份 dll 其实来自同一个模组，说明文件被改动过，请人工核对后再导入。\n\n合并包仍在原处，可自行处理：{path}",
@@ -228,6 +233,11 @@ TEXT = {
         "log_align_skip": "[免挂] 未执行 {error}",
         "log_align_fail": "[免挂] 对齐失败 不影响已导出的工程 {exc}",
         "log_scan_fail": "包信息扫描失败 {exc}",
+        "scan_unreliable_title": "自定义类判定不可靠",
+        "scan_unreliable_log": "[扫描] [!] 自定义类判定不可靠（{reason}）已退化为「{source}」口径 后续自动修复可能不完整",
+        "scan_unreliable_body": "这个模组的自定义脚本类**没能可靠判定**，本次导出已改用「{source}」这种保守口径。\n\n原因：{reason}\n\n为什么必须告诉你：这份口径会把「Toolkit 里查不到的原版类」也算成 mod 自定义类。工具本身会按「拿不准就不动」处理（不会因此删错东西），但你看到的「自定义类 N 个」这个数字不可信，后续的自动修复也可能不完整。\n\n常见于 Toolkit 版本与 mod 作者用的不一致，或这个模组的包结构比较特殊。可以先照常导出；若导出后发现脚本挂空，请优先怀疑这一条，而不是反复重导。",
+        "scan_ilspy_title": "未安装 ILSpy 看不到自定义脚本源码",
+        "scan_ilspy_body": "这个模组带自定义脚本，但没找到反编译工具 ilspycmd，已跳过自动反编译。\n\n这**不影响**导入和出包（自定义脚本照样由 mod 自带的 dll 提供），只是你看不到源码。\n\n想查看/修改这些自定义脚本，二选一：\n• 装 ILSpy 命令行：dotnet tool install -g ilspycmd（装完重开本工具）\n• 或用 dnSpy 手动反编译 Assets/Plugins/ 下那个 dll",
         "log_organize_skip": "模组资产整理跳过 {error}",
         "log_organize_fail": "模组资产整理失败 {exc}",
         "log_shader_fail_export": "[着色器] 处理失败 不影响已导出的工程 {exc}",
@@ -323,6 +333,11 @@ TEXT = {
         "install_asm_conflict": "[Install] [!] Refused to merge into the Toolkit: same-named assemblies with different content already exist ({names}); nothing was written. See the popup below.",
         "install_asm_conflict_item": "[Install] [!] Assembly {name} ({rel}) is taken: the Toolkit has {old_owner}'s copy (guid {old_guid}), this import brings {new_owner}'s (guid {new_guid})",
         "install_asm_conflict_scan_fail": "[Install] [!] Same-named assembly pre-check failed ({error}); the merge was refused to avoid overwriting an assembly already in the Toolkit. Retry or report this.",
+        "install_src_conflict": "[Install] [!] Refused to merge into the Toolkit: the incoming sources define a type that the Toolkit's scripts already define (CS0101 would stop the whole mod from loading). See the popup below.",
+        "install_src_conflict_item": "[Install] [!] Type {type} is defined twice: incoming {incoming} vs existing {existing}",
+        "install_src_conflict_scan_fail": "[Install] Source clash pre-check failed: {error}; continuing with the normal merge",
+        "install_src_conflict_title": "Duplicate type in sources - would cause CS0101, merge refused",
+        "install_src_conflict_body": "Some types in the incoming sources already exist in the Toolkit's scripts. Unity compiles all of these .cs into the same assembly, so it reports **CS0101 duplicate type definition** and the whole mod fails to load.\n\n{list}\n\nWhat to do:\n- If both sides are really the same mod (re-import), delete the older .cs in the Toolkit and import again.\n- If they are two different mods: one assembly cannot hold two types with the same name, so ask one mod author to rename the class, or have that mod ship its custom scripts as a dll instead.\n- Note this only checks sources (.cs). Two **dlls** with the same type name do NOT cause CS0101 (precompiled assemblies are independent), so the tool does not block that case.\n\nThe merge package is still at: {path}",
         "install_asm_conflict_title": "Assembly name conflict - merge refused",
         "install_asm_conflict_scan_fail_body": "The tool could not complete the same-named assembly pre-check (see the log), so the merge package was NOT merged into the Toolkit (nothing was written).\n\nNote: this is NOT a detected conflict - the pre-check itself could not decide. It guards against a later mod silently replacing an assembly already in the Toolkit, which leaves the earlier mod's part scripts as missing script. When it cannot decide, it stops and reports rather than gambling.\n\nPlease retry; if it keeps failing, report it along with the error line in the log.\n\nThe merge package is still at: {path}",
         "install_asm_conflict_body": "The Toolkit already has a same-named assembly with **different content**, so the merge package was NOT merged in (nothing was written).\n\n{list}\n\nAn assembly filename cannot be renamed: Unity's MonoScript stores it in m_AssemblyName, and Unity cannot resolve the classes inside once it changes. When two mods' dlls share a name only the first one survives - importing the second leaves the first mod's part scripts as missing script.\n\nWhat to do:\n- A Toolkit currently holds one mod assembly. To use two mods with custom scripts at once, merge the two dlls by hand (rename the classes in the second dll, otherwise Unity reports CS0101 duplicate type definition), then import with this tool.\n- Using only one: delete the earlier mod's part prefabs and its dll + .meta under Assets/Plugins, then import this mod.\n- If both dlls really come from the same mod, the file was modified - review it by hand before importing.\n\nThe merge package is still at: {path}",
@@ -414,6 +429,11 @@ TEXT = {
         "log_align_skip": "[NoHang] Not run: {error}",
         "log_align_fail": "[NoHang] Alignment failed; exported project unaffected: {exc}",
         "log_scan_fail": "Pack scan failed: {exc}",
+        "scan_unreliable_title": "Custom class detection is unreliable",
+        "scan_unreliable_log": "[Scan] [!] Custom class detection is unreliable ({reason}); fell back to the '{source}' heuristic, so later auto-fixes may be incomplete",
+        "scan_unreliable_body": "This mod's custom script classes could **not** be determined reliably, so this export fell back to the conservative '{source}' heuristic.\n\nReason: {reason}\n\nWhy you must know: this heuristic also counts stock classes that are not found in the Toolkit as mod custom classes. The tool itself stays conservative (it will not delete anything on an undecided call), but the \"N custom classes\" figure you see is not trustworthy and later auto-fixes may be incomplete.\n\nThis usually means the Toolkit version differs from the mod author's, or the pack has an unusual structure. You can still export; if scripts end up missing, suspect this first instead of re-exporting repeatedly.",
+        "scan_ilspy_title": "No ILSpy - custom script sources are not shown",
+        "scan_ilspy_body": "This mod carries custom scripts, but the decompiler ilspycmd was not found, so automatic decompilation was skipped.\n\nThis does **not** affect importing or building (the custom scripts still come from the mod's own dll) - you just cannot read the sources.\n\nTo view/modify these custom scripts, pick either:\n- Install the ILSpy command line: dotnet tool install -g ilspycmd (then reopen this tool)\n- Or decompile the dll under Assets/Plugins by hand with dnSpy",
         "log_organize_skip": "Mod asset grouping skipped: {error}",
         "log_organize_fail": "Mod asset grouping failed: {exc}",
         "log_shader_fail_export": "[Shader] Handling failed; exported project unaffected: {exc}",
@@ -496,6 +516,24 @@ def _zh2en(msg: str) -> str:
         ("反编译没有产出", "decompile produced nothing:"),
         ("反编译调用失败", "decompile call failed:"),
         ("未找到 ilspycmd 跳过自动反编译", "ilspycmd not found; auto-decompile skipped"),
+        ("未找到 ilspycmd 已跳过自动反编译 不影响导入与出包 只是看不到源码。",
+         "ilspycmd not found; auto-decompile skipped. Importing/building are unaffected, you just cannot see the sources."),
+        ("如需查看/修改模组自定义脚本 请安装 ILSpy 命令行工具",
+         "To view/modify the mod's custom scripts, install the ILSpy command line tool"),
+        ("dotnet tool install -g ilspycmd 或用 dnSpy 手动反编译",
+         "(dotnet tool install -g ilspycmd), or decompile manually with dnSpy"),
+        ("自定义类判定不可靠（", "custom class detection is unreliable ("),
+        ("）已退化为", "); fell back to "),
+        ("包内类名 − Toolkit 类名", "pack classes minus Toolkit classes"),
+        ("口径 后续自动修复可能不完整", " heuristic, so later auto-fixes may be incomplete"),
+        ("读到了", "read"),
+        ("个 MonoScript 类名 但都没有 m_AssemblyName 字段",
+         " MonoScript class names but none carries m_AssemblyName"),
+        ("（UnityPy 未能解析该字段）无法区分自定义类与原版类",
+         " (UnityPy could not read that field); custom classes cannot be told apart from stock ones"),
+        ("未能读出 MonoScript 的程序集信息（", "could not read MonoScript assembly info ("),
+        ("）", ")"),
+        ("已跳过自动反编译", "auto-decompile skipped"),
         ("kept不动", "kept untouched"),
         ("Toolkit 已有部件", "Toolkit existing parts:"),
         ("Toolkit 里已有但脚本挂空 本次一并更新", "already in Toolkit with hanging scripts; updated too"),
@@ -1981,11 +2019,15 @@ class App:
         try:
             import sfs_pack_core as keepalive
             keepalive.log = self.tlog
-            keepalive.scan_pack(
+            scan = keepalive.scan_pack(
                 Path(self.input_file),
                 Path(toolkit_dir) if toolkit_dir and Path(toolkit_dir).is_dir() else None,
                 log=self.tlog,
             )
+            # P1-1：自定义类判定退化时必须让用户看见（不是埋进日志就算数）。
+            #       代码侧已经守住铁律（拿不准就不删），所以这是可观测性而非安全修复。
+            # P2-1：包里带自定义脚本却没装 ilspycmd 时，明确告诉用户去哪儿装。
+            self._after_scan_notices(scan, log)
         except Exception as exc:
             log(self.t("log_scan_fail", exc=exc))
         args = SimpleNamespace(input=self.input_file, output_dir=output, zip=None, asset_ripper=None, no_download=True, no_zip=False, overwrite=True)
@@ -2167,6 +2209,38 @@ class App:
         self.set_progress(1.0, self.t("export_done"))
         log(self.t("export_done"))
 
+    def _after_scan_notices(self, scan: dict, log) -> None:
+        """扫描后的两条用户须知（P1-1 判定退化 / P2-1 缺 ilspycmd）。
+
+        都是"不阻断导出、但用户必须知道"的事，所以只在真发生时各弹一次窗，
+        并在日志里同步留一行，方便事后翻日志复盘。
+        """
+        # P1-1：custom_source 退化成"减法口径"或"未判定"时给出醒目提示
+        if not scan.get("custom_reliable", True):
+            reason = str(scan.get("custom_reason") or "未知原因")
+            source = str(scan.get("custom_source") or "未判定")
+            log(self.t("scan_unreliable_log", reason=reason, source=source))
+            try:
+                self._ui(lambda: messagebox.showwarning(
+                    self.t("scan_unreliable_title"),
+                    self.t("scan_unreliable_body", reason=reason, source=source)))
+            except Exception:
+                pass
+        # P2-1：包带自定义脚本 dll 但机器上没有 ilspycmd → 明确告诉用户怎么装
+        ca = scan.get("code_assembly") or {}
+        if ca.get("present") and ca.get("is_pe"):
+            try:
+                import sfs_pack_core as keepalive
+                has_ilspy = bool(keepalive.find_ilspy())
+            except Exception:
+                has_ilspy = True
+            if not has_ilspy:
+                try:
+                    self._ui(lambda: messagebox.showinfo(
+                        self.t("scan_ilspy_title"), self.t("scan_ilspy_body")))
+                except Exception:
+                    pass
+
     def _gate_popup(self, n: int, refs: int, classes: list[str], path: str) -> None:
         """闸门弹窗。导出跑在工作线程里，必须丢回 Tk 主线程再弹。"""
         body = self.t("log_gate_body", n=n, refs=refs,
@@ -2193,6 +2267,21 @@ class App:
         """预检自身出错时的弹窗：说明这是「判不准所以保守拒绝」，不是发现了冲突。"""
         title = self.t("install_asm_conflict_title")
         body = self.t("install_asm_conflict_scan_fail_body", path=str(package_dir))
+        try:
+            self._ui(lambda: messagebox.showwarning(title, body))
+        except Exception:
+            pass
+
+    def _source_conflict_popup(self, conflicts: list[dict], package_dir: Path) -> None:
+        """源码撞名（CS0101）弹窗（P1-2）：点名是哪个类、哪两个文件。"""
+        lines = [
+            f"• {c['type']}\n    本次：{c['incoming']}\n    既有：{c['existing']}"
+            for c in conflicts[:8]
+        ]
+        if len(conflicts) > 8:
+            lines.append("...")
+        body = self.t("install_src_conflict_body", list="\n".join(lines), path=str(package_dir))
+        title = self.t("install_src_conflict_title")
         try:
             self._ui(lambda: messagebox.showwarning(title, body))
         except Exception:
@@ -2259,6 +2348,26 @@ class App:
             except Exception:
                 pass
             return False  # 就地拒绝：一个文件都没写，合并包仍留在原处供人工处理
+
+        # --- P1-2 预检：本次的 .cs 源码与 Toolkit 已有脚本撞同名类型 → Unity CS0101 ---
+        # 这里与上面的程序集预检故意**反着来**：预检自身出错时放行，不拒绝。
+        # 因为两者出错的后果不对称——程序集那条漏了会静默顶掉别人已装好的模组，
+        # 而源码这条漏了最坏是 Unity 打开时报 CS0101（当场可见、用户自己就能修）。
+        # 判不准就放行 + 打日志，比"因为一个预检 bug 拦住所有人并入"划算。
+        try:
+            src_conflicts = keepalive.detect_source_type_conflicts(toolkit_dir, package_dir)
+        except Exception as exc:
+            src_conflicts = []
+            log(self.t("install_src_conflict_scan_fail", error=exc))
+        if src_conflicts:
+            for c in src_conflicts:
+                log(self.t("install_src_conflict_item", **c))
+            log(self.t("install_src_conflict", n=len(src_conflicts)))
+            try:
+                self._source_conflict_popup(src_conflicts, package_dir)
+            except Exception:
+                pass
+            return False
 
         known: set[str] = set()
         for meta in tk_assets.rglob("*.meta"):
