@@ -49,13 +49,6 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
-def safe_remove(path: Path) -> None:
-    if path.is_dir():
-        shutil.rmtree(path)
-    elif path.exists():
-        path.unlink()
-
-
 def platform_asset_name() -> str:
     system = platform.system().lower()
     machine = platform.machine().lower()

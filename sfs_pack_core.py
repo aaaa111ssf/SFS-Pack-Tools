@@ -291,17 +291,13 @@ STOCK_ASSEMBLY_NAMES = {"assembly-csharp", "assembly-csharp-firstpass", "assembl
 def _is_stock_assembly(asm: str) -> bool:
     """m_AssemblyName 是否指向游戏自身程序集（原版类）。
 
-    **必须先剥掉 `.dll` 后缀再比**——真实 .pack 里 UnityPy 读出来的是
-    `Assembly-CSharp.dll`（带后缀；实测三个真实模组共 88 个原版 MonoScript 全是
-    这个形态），而 STOCK_ASSEMBLY_NAMES 里是不带后缀的纯名。直接拿原串去比会把
-    **每一个原版类**都判成"mod 自定义类"。
+    **必须先剥 `.dll` 后缀**：真实包里 UnityPy 读出的是 `Assembly-CSharp.dll`
+    （实测三个真实模组共 88 个原版 MonoScript 全带后缀），而 STOCK_ASSEMBLY_NAMES
+    是不带后缀的纯名，直接比较会把每个原版类都判成"mod 自定义类"。
 
-    那个误判的下游后果正是 2026-09-18 那次事故的机制：
-    `restore_custom_scripts()` 里 removable = own ∩ unresolved ∩ (不在 Toolkit)，
-    一旦某个原版类因版本不匹配在 Toolkit 里查不到，它就落进 removable，
-    AssetRipper 生成的 stub 被删 → prefab 指向的 GUID 消失 → 原版脚本全挂。
-    当时归咎于"判定退化"，实际上**权威路径（m_AssemblyName）也一样中招**，
-    所以这里必须归一化，不能直接拿原串比集合。
+    后果：原版类一旦因版本不匹配在 Toolkit 里查不到，就落进 restore_custom_scripts
+    的 removable → stub 被删 → 原版脚本全挂。2026-09-18 的事故就是这个机制，
+    当时误判为"只发生在判定退化时"，其实权威路径同样中招。
     """
     return asm.strip().lower().removesuffix(".dll").removesuffix(".exe") in STOCK_ASSEMBLY_NAMES
 
@@ -355,15 +351,17 @@ def custom_monoscript_classes(pack_path: Path) -> set[str]:
 def custom_monoscript_classes_diagnose(pack_path: Path) -> tuple[set[str], str]:
     """同 `custom_monoscript_classes`，但**额外返回退化原因**（P1-1 可观测性）。
 
-    为什么必须带原因：`own` 为空有两种完全不同的成因，处理方式也不同——
-    1. 连 MonoScript 都没读出来（UnityPy 缺字段 / bundle 异常）→ 程序集信息无从谈起；
-    2. 类名读到了、但 `m_AssemblyName` 全为空 → 类名集合是对的，只是"哪些是自定义的"
-       这一层判不出来。
-    两者都让 `scan_pack` 退化成"包内类名 − Toolkit 类名"，而那种口径会把**原版类
-    误判成自定义类**（Toolkit 版本对不上时原版类查不到）。铁律是宁可不可判定也不猜，
-    所以退化本身是安全的，但**必须让用户看见**——否则他不知道后续判断不可靠。
+    返回 (自定义类集合, 原因)。原因三选一，只有前两种算退化：
+    1. 连 MonoScript 都没读出来（抛异常 / 返回空）；
+    2. 类名读到了但 `m_AssemblyName` 全是空串；
+    3. 程序集名都读到且全是原版程序集 → **不是退化**，是确实没有自定义类，返回空原因。
 
-    返回 (自定义类集合, 退化原因；未退化时为空串)。
+    退化时 `scan_pack` 退化成"包内类名 − Toolkit 类名"，会把原版类误判成自定义类。
+    铁律是宁可不可判定也不猜，所以退化本身不破坏（下游取空集），但必须让用户看见，
+    否则他不知道"自定义类 N 个"不可信。
+
+    ⚠️ 判定可靠 ≠ 判定正确：`_is_stock_assembly` 修好之前，权威路径本身也把原版类
+    全算成了自定义类（详见该函数注释）。
     """
     try:
         mapping = collect_monoscript_assemblies(pack_path)
@@ -390,6 +388,9 @@ def collect_monoscript_pathids(pack_path: Path, platforms: tuple[str, ...] = PRE
     bundle 里 MonoBehaviour.m_Script 是 PPtr(m_FileID=0, m_PathID=X)，X 就是这里的 key；
     MonoScript 上自带 m_ClassName / m_AssemblyName，足以决定该指向 Toolkit 真脚本还是 mod dll。
     有了它，即使 AssetRipper 一个 stub 都没生成，也能把脚本引用重写到正确目标。
+
+    注：当前无调用方（`collect_monoscript_classes` 走的是另一条更轻的路），但这是
+    「AssetRipper 一个 stub 都不生成时如何对齐」那条设计的原理依据，别当死代码删。
     """
     import UnityPy
 
@@ -896,14 +897,6 @@ def assembly_refs_from_bytes(blob: bytes) -> list[str]:
     return sorted(hits)
 
 
-def dll_assembly_refs(dll_path: Path) -> list[str]:
-    """读 dll 文件并提取它引用的托管程序集名。"""
-    try:
-        return assembly_refs_from_bytes(Path(dll_path).read_bytes())
-    except OSError:
-        return []
-
-
 def toolkit_script_classes(toolkit_root) -> set[str]:
     """Toolkit 自带脚本里声明的类名集合，用来区分「mod 自定义类」与「SFS 原生类」。"""
     root = Path(toolkit_root)
@@ -1304,15 +1297,16 @@ def restore_custom_scripts(
         result["via"] = "dll"
         result["dll_guid"] = mod_guid
         result["classes"] = list(unresolved_classes)
-        # 确认走 dll 路线后才清 stub——但**只清"真正由 mod dll 提供"的那些类**。
-        # 原版类(m_AssemblyName=Assembly-CSharp)的 stub 必须留着：它们要被 align 重写到
-        # Toolkit 真脚本，提前删掉 prefab 就指向不存在的 GUID，结果是
-        # "自定义脚本挂上了、原版脚本全挂"。
+        # 只清"真正由 mod dll 提供"的类。原版类的 stub 必须留着（align 要重写到 Toolkit 真脚本），
+        # 删了 prefab 就指向不存在的 GUID。
+        # ⚠️ 2026-09-18 事故现场：own 曾把原版类全算进来（m_AssemblyName 带 .dll 后缀），
+        # 原版类一旦在 Toolkit 里查不到就会落进 removable → stub 被删 → 原版脚本全挂，
+        # 且无需任何触发条件。现由 _is_stock_assembly() 归一化，改它前先读那函数的注释。
         own: set[str] = set()
         try:
             own = custom_monoscript_classes(pack_path)
         except Exception:
-            own = set()
+            own = set()          # 拿不准就不删：宁可漏删不可错删
         toolkit_names = set(toolkit_classes or ())
         removable = {c for c in own if c in set(unresolved_classes) and c not in toolkit_names}
         if own:
@@ -1955,25 +1949,19 @@ def _mod_owner_of_guid(assets: Path, guid: str) -> str:
 def detect_assembly_conflicts(
     toolkit_root: Path, package_dir: Path, incoming_owner: str = "",
 ) -> list[dict]:
-    """预检：Toolkit 里已有**内容不同**的同名程序集 → 不能并入（方案 A / P0-1）。
+    """预检：Toolkit 里已有**内容不同**的同名程序集 → 拒绝并入（方案 A / P0-1）。
 
-    背景（三层叠加）：程序集文件名天生不唯一——方案 B 把每个模组的 dll 都落成
-    `Assets/Plugins/CodeAssembly.dll`，且**不能改名**（MonoScript 的
-    m_AssemblyName 就是这个文件名，改了 Unity 认不出里面的类）；安装层的
-    「GUID 过期占位」例外判据是"同名 + GUID 不同 + 新 GUID 被包内引用"，
-    对 dll **恰好全部成立**，于是后装的模组会把 dll 静默覆盖到先装的上面，
-    先装模组的部件脚本全部悬空(missing script)，日志却只有一行
-    "已替换 N 个 GUID 过期的同名残留"，用户完全看不出来自己弄坏了前一个模组。
+    dll 文件名天生不唯一：方案 B 把每个模组的 dll 都落成 `Plugins/CodeAssembly.dll`，
+    且不能改名（MonoScript 的 m_AssemblyName 就是它）。而安装层的「GUID 过期占位」
+    例外判据（同名 + GUID 不同 + 新 GUID 被引用）对 dll 恰好全成立，于是后装的模组
+    会静默覆盖先装的，先装模组的部件脚本全部 missing script，日志却只有一行
+    "已替换 N 个同名残留"。
 
-    这里只在**内容字节不同**时判冲突，两种情况必须分开：
-    - 字节相同 = 同一个模组重复导入（每次导出都会重新生成 .meta GUID），
-      照常覆盖以刷新 GUID；否则重导同一个模组反而会让它自己挂空。
-    - 字节不同 = 两个模组各带一份程序集，拒绝并入，交人工处理。
+    只在**字节不同**时判冲突：字节相同 = 同一模组重复导入（每次导出重新生成 GUID），
+    必须放行并靠覆盖刷新 GUID，否则重导自己反而挂空。读取失败不判冲突（宁可漏拦不误拦）。
 
-    读取失败一律**不判冲突**（宁可漏拦也不误拦，真撞上了还有上面的兜底日志）。
-
-    返回冲突清单 [{name, rel, existing_guid, incoming_guid, existing_owner,
-    incoming_owner, existing_path}]；空列表表示可以安全并入。
+    返回 [{name, rel, existing_guid, incoming_guid, existing_owner,
+    incoming_owner, existing_path}]；空列表 = 可安全并入。
     """
     tk_assets = Path(toolkit_root) / "Assets"
     pkg_assets = Path(package_dir) / "Assets"
@@ -2025,45 +2013,43 @@ def _solid_declared_types(cs_files) -> dict[str, list[Path]]:
 
 
 def detect_source_type_conflicts(toolkit_root: Path, package_dir: Path) -> list[dict]:
-    """预检：本次要并入的 `.cs` 源码与 Toolkit 里已有的 `.cs` 撞了同名类型（P1-2）。
+    """预检：本次要并入的 `.cs` 与 Toolkit 里已有的 `.cs` 撞同名类型（P1-2）。
 
-    **这里查的是源码，不是 dll**——CS0101 只在"同一个编译单元里出现两次定义"时发生：
-    - `.cs` × `.cs`：两个文件都会被编译进 Assembly-CSharp → 真的报 CS0101，整个模组加载不了；
-    - `.dll` × `.dll`：两个预编译程序集各自编译、Unity 只做引用，**不会**报 CS0101
-      （同名类型分属不同程序集，本就可以共存）。所以按 dll 类型名拦是拦错了对象，
-      见 `待解决问题.md` P1-2 的更正说明。
+    只查源码不查 dll：CS0101 要求"同一编译单元里出现两次定义"。`.cs` × `.cs` 会被
+    一起编译进 Assembly-CSharp → 真报错；`.dll` × `.dll` 是两个预编译程序集，
+    Unity 只做引用，**不会**报 CS0101（详见 `待解决问题.md` P1-2 更正）。
 
     真实触发路径：dll 没被认成插件时 `restore_custom_scripts()` 会退回"反编译源码接回"，
-    把 .cs 写进 `Assets/Scripts/ModCode/`。两个都走这条路的模组就会在同一份 Toolkit
-    里各留一份同名类型的 .cs —— 导入第二个时工具毫无察觉，Unity 打开才炸。
+    把 .cs 写进 `Assets/Scripts/ModCode/`；两个都走这条路的模组会在同一份 Toolkit
+    里各留一份同名类型的 .cs，导入第二个时工具毫无察觉，Unity 打开才炸。
 
-    判据与 `find_duplicate_types` 对齐：全限定名 + 非 partial + 文件不同。
-
-    返回 [{type, incoming, existing, where}]；空列表表示没有源码撞名。
+    判据与 `find_duplicate_types` 对齐：全限定名 + 非 partial + 只算顶层。
+    返回 [{type, incoming, existing, where}]；空列表 = 无撞名。
     """
     tk_assets = Path(toolkit_root) / "Assets"
     pkg_assets = Path(package_dir) / "Assets"
     if not tk_assets.is_dir() or not pkg_assets.is_dir():
         return []
-    incoming = _solid_declared_types(sorted(pkg_assets.rglob("*.cs")))
+    # 包内 .cs 只扫一遍，结果同时用于「对 Toolkit」和「包内自撞」两侧
+    pkg_cs = sorted(pkg_assets.rglob("*.cs"))
+    incoming = _solid_declared_types(pkg_cs)
     if not incoming:
-        return []
+        return []          # 默认的 dll 路线包里没有 .cs，这里直接返回，不扫 Toolkit
     conflicts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
     for label, other, other_root in (
         ("toolkit", _solid_declared_types(sorted(tk_assets.rglob("*.cs"))), tk_assets),
-        ("package", _solid_declared_types(sorted(pkg_assets.rglob("*.cs"))), pkg_assets),
+        ("package", incoming, pkg_assets),
     ):
         for fq, files in sorted(incoming.items()):
-            if fq not in other:
+            if fq not in other or (label, fq) in seen:
                 continue
             for src in files:
                 # 包内互撞时同一份文件会与自己"撞"，跳过自己
                 others = [p for p in other[fq] if p != src]
                 if not others:
                     continue
-                # 每个(来源, 类型)只报一条：同一个类在两个文件里互撞时不必报两遍
-                if any(c["type"] == fq and c["where"] == label for c in conflicts):
-                    break
+                seen.add((label, fq))   # 每个(来源, 类型)只报一条，不重复
                 conflicts.append({
                     "type": fq,
                     "incoming": src.relative_to(pkg_assets).as_posix(),

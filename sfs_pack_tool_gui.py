@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SFS Pack Tool v2.3.3."""
+"""SFS Pack Tool v2.3.4."""
 
 from __future__ import annotations
 
@@ -25,8 +25,10 @@ import sfs_project_exporter as prefab_exporter
 from sfs_official_keys import OFFICIAL_LOC_KEYS
 
 DEFAULT_AUTHOR = "〈A Future star汉化〉"
-VERSION = "2.3.3"
-VERSION_TITLE = "V2.3.3"
+# 版本号的单一信息源。改版本时要同步：SFS_Pack_Tool.spec 的 name= 与注释、
+# build.bat / build_and_sign.bat / sign.bat、APP_USER_MODEL_ID、tutorial.html。
+VERSION = "2.3.4"
+VERSION_TITLE = "V2.3.4"
 EXCLUDE_WORDS = {
     "Color_Gray", "Toggle", "width", "target_state", "tank", "height", "DeployParachute",
     "Landing_Leg_Expanded", "Basic_Parts", "Color_Black", "Color_White", "Flat Smooth 4",
@@ -59,10 +61,9 @@ PLATFORM_NAMES = {
     "MacBuild": "Mac",
     "IOS_Build": "iOS",
 }
-PLATFORM_LABELS = {name: key for key, name in PLATFORM_NAMES.items()}
 TEXT = {
     "zh": {
-        "window": "SFS Pack Tool V2.3.3 - Localization & Unity Export-by A Future star",
+        "window": "SFS Pack Tool V2.3.4 - Localization & Unity Export-by A Future star",
         "title": "SFS Pack Tool " + VERSION_TITLE,
         "subtitle": "汉化写入 · Prefab · 贴图 · Unity 工程导出 · 免挂提取",
         "language": "语言",
@@ -151,7 +152,7 @@ TEXT = {
         "install_asm_conflict_scan_fail": "[安装] [!] 同名程序集预检失败（{error}）已保守拒绝并入 以免顶掉 Toolkit 里已有的程序集 请重试或反馈",
         "install_src_conflict": "[安装] [!] 拒绝并入 Toolkit：本次的源码与 Toolkit 里已有的脚本撞了同名类型（CS0101 会让整个模组加载不了）详见下方弹窗",
         "install_src_conflict_item": "[安装] [!] 类型 {type} 被定义了两次：本次 {incoming} ↔ 既有 {existing}",
-        "install_src_conflict_scan_fail": "[安装] 源码撞名预检失败 {error} 继续按原流程并入",
+        "install_src_conflict_scan_fail": "[安装] [!] 源码撞名预检失败（{error}）已放行并入 本次无法排除 CS0101 风险 请在 Unity 里确认脚本能编译过",
         "install_src_conflict_title": "源码类型撞名 会报 CS0101 已拒绝合并",
         "install_src_conflict_body": "本次要并入的源码里，有类型名和 Toolkit 里已有的脚本撞了。Unity 会把这些 .cs 一起编译进同一个程序集，于是报 **CS0101 类型重复定义**，整个模组加载不了。\n\n{list}\n\n怎么办：\n• 如果两边其实是同一个模组（重复导入），删掉 Toolkit 里旧的那份 .cs 再导入即可。\n• 如果是两个不同的模组：一份 Toolkit 的同一个程序集里放不下两份同名类型，请让其中一个模组作者改类名，或把其中一个模组的自定义脚本改成 dll 方式提供。\n• 注意这只查源码（.cs）。两个 **dll** 里的同名类型不会报 CS0101（预编译程序集各自独立），所以工具不拦那种情况。\n\n合并包仍在原处：{path}",
         "install_asm_conflict_title": "同名程序集冲突 已拒绝合并",
@@ -257,7 +258,7 @@ TEXT = {
         "about_author_text": "作者：A Future star(汉化)\n本工具由 A Future star 汉化并维护，用于降低 SFS mod 制作门槛。\n如有问题或建议，欢迎加入 QQ 群交流。",
     },
     "en": {
-        "window": "SFS Pack Tool V2.3.3 - Localization & Unity Export-by A Future star",
+        "window": "SFS Pack Tool V2.3.4 - Localization & Unity Export-by A Future star",
         "title": "SFS Pack Tool " + VERSION_TITLE,
         "subtitle": "Localization · Prefab · Textures · Unity Export · Keep-alive extraction",
         "language": "Language:",
@@ -335,7 +336,7 @@ TEXT = {
         "install_asm_conflict_scan_fail": "[Install] [!] Same-named assembly pre-check failed ({error}); the merge was refused to avoid overwriting an assembly already in the Toolkit. Retry or report this.",
         "install_src_conflict": "[Install] [!] Refused to merge into the Toolkit: the incoming sources define a type that the Toolkit's scripts already define (CS0101 would stop the whole mod from loading). See the popup below.",
         "install_src_conflict_item": "[Install] [!] Type {type} is defined twice: incoming {incoming} vs existing {existing}",
-        "install_src_conflict_scan_fail": "[Install] Source clash pre-check failed: {error}; continuing with the normal merge",
+        "install_src_conflict_scan_fail": "[Install] [!] Source clash pre-check failed ({error}); the merge continued, so CS0101 cannot be ruled out this time. Please confirm your scripts compile in Unity.",
         "install_src_conflict_title": "Duplicate type in sources - would cause CS0101, merge refused",
         "install_src_conflict_body": "Some types in the incoming sources already exist in the Toolkit's scripts. Unity compiles all of these .cs into the same assembly, so it reports **CS0101 duplicate type definition** and the whole mod fails to load.\n\n{list}\n\nWhat to do:\n- If both sides are really the same mod (re-import), delete the older .cs in the Toolkit and import again.\n- If they are two different mods: one assembly cannot hold two types with the same name, so ask one mod author to rename the class, or have that mod ship its custom scripts as a dll instead.\n- Note this only checks sources (.cs). Two **dlls** with the same type name do NOT cause CS0101 (precompiled assemblies are independent), so the tool does not block that case.\n\nThe merge package is still at: {path}",
         "install_asm_conflict_title": "Assembly name conflict - merge refused",
@@ -778,7 +779,7 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
-APP_USER_MODEL_ID = "AFuturestar.SFSPackTool.2.3.3"
+APP_USER_MODEL_ID = "AFuturestar.SFSPackTool.2.3.4"
 _WM_SETICON = 0x0080
 _IMAGE_ICON = 1
 _LR_LOADFROMFILE = 0x00000010

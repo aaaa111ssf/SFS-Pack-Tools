@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """SFS Pack Tool 离线回归测试（无需真实 .pack / AssetRipper）。
 

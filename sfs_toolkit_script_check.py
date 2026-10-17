@@ -28,10 +28,7 @@ def build_script_guid_map(toolkit_dir: str) -> dict[str, str]:
     """
     script_dir = Path(toolkit_dir)
     guid_map: dict[str, str] = {}
-    meta_count = 0
-    matched_cs = 0
     for meta_path in script_dir.rglob("*.cs.meta"):
-        meta_count += 1
         text = meta_path.read_text(encoding="utf-8", errors="ignore")
         m = re.search(r"^guid:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
         if not m:
@@ -39,8 +36,6 @@ def build_script_guid_map(toolkit_dir: str) -> dict[str, str]:
         guid = m.group(1).lower()
         cs_path = meta_path.with_suffix("").with_suffix(".cs")  # Foo.cs.meta -> Foo.cs
         guid_map[guid] = str(cs_path)
-        if cs_path.exists():
-            matched_cs += 1
     return guid_map
 
 
