@@ -2,7 +2,7 @@
 > **Localization writing, stripping, Prefab/texture export, and Unity project recovery**  
 > Embedded AssetRipper 1.1.4 · Windows x64 · GPL-3.0-compliant distribution
 >
-> Language / 语言：[简体中文](README.md) · [English](README_EN.md)
+> Language / 语言：[简体中文](README.md) · [English](README_EN.md) · [更新日志 / Changelog](CHANGELOG.md)
 
 SFS Pack Tool processes SFS `.pack` mod files. It can extract translatable text, write translations into a new Pack, strip redundant platform builds to shrink file size, and export Unity AssetBundles as a Unity project containing real YAML Prefabs, textures, materials, and project configuration. The 2.3 series embeds the official AssetRipper 1.1.4 Windows x64 runtime, so no AssetRipper download, path selection, or setup is required. Unity-project export now merges new parts directly into the Modding Toolkit you specify.
 

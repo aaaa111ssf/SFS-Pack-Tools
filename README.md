@@ -2,7 +2,7 @@
 
 V2.3.4 · Author / 作者: A Future star · QQ Group / QQ 群: 923038827
 
-Language / 语言: [🇬🇧 English](README_EN.md) ｜ [🇨🇳 中文](#中文)
+Language / 语言: [🇬🇧 English](README_EN.md) ｜ [🇨🇳 中文](#中文) ｜ [📋 更新日志 / Changelog](CHANGELOG.md)
 
 ---
 
