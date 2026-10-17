@@ -1,17 +1,17 @@
-# SFS Pack Tool V2.3
+# SFS Pack Tool V2.3.4
 > **Localization writing, stripping, Prefab/texture export, and Unity project recovery**  
 > Embedded AssetRipper 1.1.4 · Windows x64 · GPL-3.0-compliant distribution
 >
 > Language / 语言：[简体中文](README.md) · [English](README_EN.md)
 
-SFS Pack Tool processes SFS `.pack` mod files. It can extract translatable text, write translations into a new Pack, strip redundant platform builds to shrink file size, and export Unity AssetBundles as a Unity project containing real YAML Prefabs, textures, materials, and project configuration. V2.3 embeds the official AssetRipper 1.1.4 Windows x64 runtime, so no AssetRipper download, path selection, or setup is required. Unity-project export now merges new parts directly into the Modding Toolkit you specify.
+SFS Pack Tool processes SFS `.pack` mod files. It can extract translatable text, write translations into a new Pack, strip redundant platform builds to shrink file size, and export Unity AssetBundles as a Unity project containing real YAML Prefabs, textures, materials, and project configuration. The 2.3 series embeds the official AssetRipper 1.1.4 Windows x64 runtime, so no AssetRipper download, path selection, or setup is required. Unity-project export now merges new parts directly into the Modding Toolkit you specify.
 
 Use this tool only with mods and assets that you own, are authorized to modify, or are otherwise legally allowed to process. For mods that depend on custom game assemblies, exported Prefabs and assets can be inspected and edited, but game-specific scripts may not compile in a blank Unity project.
 
 | Item | Details |
 | --- | --- |
 | Supported system | Windows 64-bit |
-| Main program | `SFS_Pack_Tool_v2.3_Embedded_GPL_prev.exe` |
+| Main program | `SFS_Pack_Tool_v2.3.4_Embedded_GPL.exe` |
 | Embedded exporter | AssetRipper 1.1.4 Windows x64 (forced built-in; no manual selection/download) |
 | Interface languages | Chinese and English |
 | License | GPL-3.0-or-later, with license text and corresponding source materials included |
@@ -34,7 +34,7 @@ The localization workflow reads the JSON container of an SFS `.pack` file and th
 
 ## Download and launch
 
-Download the EXE from the release package and place it in a normal folder where you have write permission, for example `D:\Tools\SFS Pack Tool\`. Start it by double-clicking `SFS_Pack_Tool_v2.3_Embedded_GPL_prev.exe`.
+Download the EXE from the release package and place it in a normal folder where you have write permission, for example `D:\Tools\SFS Pack Tool\`. Start it by double-clicking `SFS_Pack_Tool_v2.3.4_Embedded_GPL.exe`.
 
 The EXE is signed with an AFuturestar self-signed certificate. Windows may still show an unknown publisher or SmartScreen warning on systems where that certificate has not been installed as a trusted publisher. Verify the public certificate and SHA-256 signature information provided in the release package before deciding whether to run it.
 
@@ -42,11 +42,11 @@ The embedded AssetRipper ships with the program, so nothing needs to be download
 
 | File or location | Purpose |
 | --- | --- |
-| `SFS_Pack_Tool_v2.3_Embedded_GPL_prev.exe` | Main program with the embedded runtime |
+| `SFS_Pack_Tool_v2.3.4_Embedded_GPL.exe` | Main program with the embedded runtime |
 | `AssetRipper-1.1.4/` | Embedded AssetRipper files extracted on first export |
 | `%LOCALAPPDATA%\AFuturestar\SFS-Pack-Tool\` | Fallback extraction location when the EXE folder is not writable |
 | `settings.json` | Stores language, author signature, and path preferences |
-| `LICENSE-GPL-3.0.txt` | Full GNU GPL v3.0 license text |
+| `LICENSE-GPL-3.0.txt` | Full [GNU GPL v3][2] license text |
 | `GPL_COMPLIANCE.md` | AssetRipper version, checksums, upstream link, and compliance information |
 
 ## Quick start
@@ -84,7 +84,7 @@ In the **Strip / minimize tool** section, first click **Package info** to review
 
 ## AssetRipper behavior
 
-V2.3 always uses the AssetRipper 1.1.4 embedded with the program. There is no AssetRipper path field, no manual selection, and no network download. The tool starts AssetRipper 1.1.4 with only the options supported by that version — `--port` and `--launch-browser false` — and never passes options unrecognized by 1.1.4.
+The 2.3 series always uses the AssetRipper 1.1.4 embedded with the program. There is no AssetRipper path field, no manual selection, and no network download. The tool starts AssetRipper 1.1.4 with only the options supported by that version — `--port` and `--launch-browser false` — and never passes options unrecognized by 1.1.4.
 
 If the embedded version exits abnormally, the tool restarts it from the **same embedded executable** with compatibility parameters; it never downloads anything. If the EXE cannot be extracted or started, make sure the containing folder is writable, ensure security software has not quarantined `AssetRipper-1.1.4`, and keep the full log output for diagnosis.
 
@@ -115,21 +115,21 @@ Confirm that the selected file is an SFS JSON-format `.pack`, not a ZIP file, an
 Use only **Extract translatable text** and **Apply translation and create Pack**. This workflow needs neither AssetRipper nor the Modding Toolkit.
 
 ### Why do exported Prefabs show Missing Script?
-This can be expected. Some mods depend on SFS game assemblies or custom `CodeAssembly` code that cannot be fully restored in a blank Unity project. Prefabs, textures, and most serialized fields remain available for viewing and editing. References that can be satisfied by the Toolkit's scripts are handled automatically by V2.3's keep-alive alignment.
+This can be expected. Some mods depend on SFS game assemblies or custom `CodeAssembly` code that cannot be fully restored in a blank Unity project. Prefabs, textures, and most serialized fields remain available for viewing and editing. References that can be satisfied by the Toolkit's scripts are handled automatically by the 2.3-series keep-alive alignment.
 
 ### The embedded AssetRipper cannot be extracted or started
-Ensure that the EXE folder is writable and that security software has not quarantined the EXE or the `AssetRipper-1.1.4` folder. Move the EXE to a new folder under Documents or Desktop and try again. After a crash, V2.3 restarts from the embedded version with compatibility parameters and does not download anything. Keep the complete log output when reporting an issue.
+Ensure that the EXE folder is writable and that security software has not quarantined the EXE or the `AssetRipper-1.1.4` folder. Move the EXE to a new folder under Documents or Desktop and try again. After a crash, the tool restarts from the embedded version with compatibility parameters and does not download anything. Keep the complete log output when reporting an issue.
 
 ## License and source code
 
-The embedded AssetRipper 1.1.4 runtime is licensed under GNU GPL v3.0. Accordingly, this embedded distribution is provided under GPL-3.0-or-later. The source-code package includes the complete AssetRipper 1.1.4 source ZIP, the official Windows x64 runtime ZIP, SFS Pack Tool source files, build materials, and the license text. See `GPL_COMPLIANCE.md` for version details, SHA-256 checksums, and upstream information.
+The embedded [AssetRipper][1] 1.1.4 runtime is licensed under the [GNU General Public License v3][2]. Accordingly, this embedded distribution is provided under GPL-3.0-or-later. The source-code package includes the complete AssetRipper 1.1.4 source ZIP, the official Windows x64 runtime ZIP, SFS Pack Tool source files, build materials, and the license text. See `GPL_COMPLIANCE.md` (included in the source-code package) for version details, SHA-256 checksums, and upstream information.
 
 > This README is usage documentation and not legal advice. When distributing or modifying this embedded edition, keep the GPL license, third-party notices, and corresponding source materials together.
 
 ## References
 
-[1]: https://github.com/AssetRipper/AssetRipper "AssetRipper official repository"
-[2]: https://www.gnu.org/licenses/gpl-3.0.html "GNU General Public License v3.0"
+[1]: https://github.com/AssetRipper/AssetRipper
+[2]: https://www.gnu.org/licenses/gpl-3.0.html
 
 ---
-**SFS Pack Tool V2.3 · A Future star**
+**SFS Pack Tool V2.3.4 · A Future star**
