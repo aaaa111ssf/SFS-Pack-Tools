@@ -679,6 +679,205 @@ def test_install_replaces_stale_guid(tmp: Path, r: Result) -> None:
     r.check("报告了替换数量", any("install_replaced_stale" in x for x in logs))
 
 
+def test_install_refuses_assembly_conflict(tmp: Path, r: Result) -> None:
+    """P0-1 回归：两个模组各自带 dll 时，后装的不能静默顶掉先装的程序集。
+
+    复现步骤照 `待解决问题.md`：ModA 先装（Plugins/CodeAssembly.dll 内容 MZ_MOD_A_DLL），
+    再装 ModB（同名 dll 内容 MZ_MOD_B_DLL，两者 meta guid 不同且新 guid 被包内 prefab 引用）。
+    这三个条件恰好把「GUID 过期占位」例外全部满足 → 修复前 ModB 的 dll 直接盖上去，
+    ModA 的部件脚本引用全部悬空，而日志只有一行"已替换 2 个同名残留"。
+
+    修复（方案 A）：内容不同的同名程序集 → 拒绝整个并入 + 弹窗点名两个模组。
+    """
+    print("\n=== 4d. 同名程序集冲突：拒绝并入并点名两个模组（P0-1）===")
+    spec = importlib.util.spec_from_file_location("gui_asm", BUILD_KIT / "sfs_pack_tool_gui.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    GUID_A, GUID_B = "a" * 32, "b" * 32
+
+    def dll(path: Path, blob: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+
+    def build(toolkit: Path, package: Path) -> None:
+        # ModA 已在 Toolkit 里：它的 dll 占着 Plugins/CodeAssembly.dll
+        dll(toolkit / "Assets" / "Plugins" / "CodeAssembly.dll", b"MZ_MOD_A_DLL")
+        write(toolkit / "Assets" / "Plugins" / "CodeAssembly.dll.meta", unity_meta(GUID_A))
+        a_dir = toolkit / "Assets" / "Resources" / "Parts" / "Mod A"
+        write(a_dir / "Alpha.prefab", mono_yaml(GUID_A))
+        write(a_dir / "Alpha.prefab.meta", unity_meta("1" * 32))
+        # 待并入的 ModB：同名 dll、内容不同、自己的 guid 被包内 prefab 引用
+        dll(package / "Assets" / "Plugins" / "CodeAssembly.dll", b"MZ_MOD_B_DLL")
+        write(package / "Assets" / "Plugins" / "CodeAssembly.dll.meta", unity_meta(GUID_B))
+        b_dir = package / "Assets" / "Resources" / "Parts" / "Mod B"
+        write(b_dir / "Beta.prefab", mono_yaml(GUID_B))
+        write(b_dir / "Beta.prefab.meta", unity_meta("2" * 32))
+
+    class _Shell:  # 用真实文案渲染，日志与弹窗正文都能断言到"点名"效果
+        _ui = staticmethod(lambda fn: fn())
+
+        def t(self, key, **kw):
+            return f"{key}|{module.TEXT['zh'][key].format(**kw)}"
+
+        def _assembly_conflict_popup(self, conflicts, package_dir):
+            return module.App._assembly_conflict_popup(self, conflicts, package_dir)
+
+        def _asm_scan_failed_popup(self, package_dir):
+            return module.App._asm_scan_failed_popup(self, package_dir)
+
+    shown: list[tuple[str, str]] = []
+
+    class _FakeMB:
+        @staticmethod
+        def showwarning(title, body, **kw):
+            shown.append((title, body))
+
+    module.messagebox = _FakeMB
+
+    toolkit = make_toolkit(tmp / "ToolkitAsm")
+    package = tmp / "PkgAsm"
+    build(toolkit, package)
+
+    logs: list[str] = []
+    merged = module.App.install_into_toolkit(
+        _Shell(), logs.append, toolkit, package, {"ok": True, "parts_subfolder": "Mod B"})
+    for line in logs:
+        print("   ", line)
+
+    tk_dll = toolkit / "Assets" / "Plugins" / "CodeAssembly.dll"
+    r.check("并入被拒（返回 False，调用方据此跳过 PackData 盖章）", merged is False)
+    r.check("先装模组的 dll 字节没被顶掉", tk_dll.read_bytes() == b"MZ_MOD_A_DLL")
+    r.check("先装模组的 dll GUID 没被换掉",
+            GUID_A in (tk_dll.with_name(tk_dll.name + ".meta")).read_text(encoding="utf-8"))
+    r.check("先装模组的部件引用仍指向自己那份 dll",
+            GUID_A in (toolkit / "Assets" / "Resources" / "Parts" / "Mod A"
+                       / "Alpha.prefab").read_text(encoding="utf-8"))
+    r.check("后装模组的部件也没写进去（拒绝的是整个并入，不只是 dll）",
+            not (toolkit / "Assets" / "Resources" / "Parts" / "Mod B" / "Beta.prefab").exists())
+    r.check("日志逐条点名两个模组", any("Mod A" in x and "Mod B" in x for x in logs))
+    r.check("日志点名两份程序集的 GUID（不是笼统一句'有冲突'）",
+            any(GUID_A[:8] in x and GUID_B[:8] in x for x in logs))
+
+    # ---- 弹窗：必须点名两个模组并给出处理办法 ----
+    r.check("弹了一个窗（不是只埋在日志里）", len(shown) == 1)
+    if shown:
+        title, body = shown[0]
+        print("    --- 弹窗标题:", title)
+        for line in body.splitlines()[:6]:
+            print("    |", line)
+        r.check("弹窗标题是专门的冲突标题",
+                module.TEXT["zh"]["install_asm_conflict_title"] in title)
+        r.check("弹窗正文点名两个模组", "Mod A" in body and "Mod B" in body)
+        r.check("弹窗正文说明为什么不能改名 + 给出处理办法",
+                "m_AssemblyName" in body and "CS0101" in body)
+
+    # ---- 核心预检本身（弹窗用的就是它，顺便锁住返回结构）----
+    import sfs_pack_core as ka
+    conflicts = ka.detect_assembly_conflicts(toolkit, package, "Mod B")
+    r.check("核心预检返回 1 处冲突", len(conflicts) == 1)
+    if conflicts:
+        c = conflicts[0]
+        r.check("核心预检点名 dll/相对路径/两份 GUID/两个模组",
+                c["name"] == "CodeAssembly.dll"
+                and c["rel"] == "Plugins/CodeAssembly.dll"
+                and c["existing_guid"] == GUID_A and c["incoming_guid"] == GUID_B
+                and c["existing_owner"] == "Mod A" and c["incoming_owner"] == "Mod B")
+
+    # ---- 英文界面同样要点名（i18n 漏一条就白修）----
+    class _ShellEn(_Shell):
+        def t(self, key, **kw):
+            return module.TEXT["en"][key].format(**kw)
+
+    shown.clear()
+    module.App._assembly_conflict_popup(_ShellEn(), conflicts, package)
+    r.check("英文弹窗同样点名两个模组",
+            len(shown) == 1 and "Mod A" in shown[0][1] and "Mod B" in shown[0][1])
+
+    # ---- 预检自己出错 → 必须保守拒绝（判不准就停，绝不放行去赌）----
+    tk3 = make_toolkit(tmp / "ToolkitScanFail")
+    pk3 = tmp / "PkgScanFail"
+    build(tk3, pk3)
+    real_detect = ka.detect_assembly_conflicts
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("scan blew up")
+
+    ka.detect_assembly_conflicts = _boom
+    logs2: list[str] = []
+    shown.clear()
+    try:
+        merged2 = module.App.install_into_toolkit(
+            _Shell(), logs2.append, tk3, pk3, {"ok": True, "parts_subfolder": "Mod B"})
+    finally:
+        ka.detect_assembly_conflicts = real_detect
+    r.check("预检自身出错时保守拒绝（不 fail-open 去赌）", merged2 is False)
+    r.check("预检出错的日志说清了是保守拒绝",
+            any("install_asm_conflict_scan_fail" in x and "scan blew up" in x for x in logs2))
+    r.check("预检出错也弹窗（不能悄无声息）", len(shown) == 1)
+    r.check("先装模组的 dll 未被写入",
+            (tk3 / "Assets" / "Plugins" / "CodeAssembly.dll").read_bytes() == b"MZ_MOD_A_DLL")
+
+
+def test_install_same_asm_reimport_allowed(tmp: Path, r: Result) -> None:
+    """反向护栏：同一模组重复导入必须放行（dll 字节相同、只是 GUID 重新生成）。
+
+    每次导出都会给 dll 重新生成 .meta GUID，所以"内容不同才拦"这个前提一旦写错，
+    重导同一个模组就会被自己拒掉——而那恰恰是「GUID 过期占位」例外该修的场景。
+    """
+    print("\n=== 4e. 同一模组重复导入不该被拦（别把该修的场景也堵死）===")
+    spec = importlib.util.spec_from_file_location("gui_reimp", BUILD_KIT / "sfs_pack_tool_gui.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    OLD, NEW = "a" * 32, "b" * 32
+
+    class _Shell:
+        t = staticmethod(lambda key, **kw: f"{key}:{kw}")
+        _ui = staticmethod(lambda fn: fn())
+
+    toolkit = make_toolkit(tmp / "ToolkitReimp")
+    tk_dll = toolkit / "Assets" / "Plugins" / "CodeAssembly.dll"
+    tk_dll.parent.mkdir(parents=True, exist_ok=True)
+    tk_dll.write_bytes(b"MZ_SAME_DLL")
+    write(tk_dll.with_name(tk_dll.name + ".meta"), unity_meta(OLD))
+
+    package = tmp / "PkgReimp"
+    pkg_dll = package / "Assets" / "Plugins" / "CodeAssembly.dll"
+    pkg_dll.parent.mkdir(parents=True, exist_ok=True)
+    pkg_dll.write_bytes(b"MZ_SAME_DLL")  # 字节相同，只有 GUID 变了
+    write(pkg_dll.with_name(pkg_dll.name + ".meta"), unity_meta(NEW))
+    write(package / "Assets" / "Resources" / "Parts" / "Mod A" / "Alpha.prefab", mono_yaml(NEW))
+    write(package / "Assets" / "Resources" / "Parts" / "Mod A" / "Alpha.prefab.meta", unity_meta("1" * 32))
+
+    logs: list[str] = []
+    merged = module.App.install_into_toolkit(
+        _Shell(), logs.append, toolkit, package, {"ok": True, "parts_subfolder": "Mod A"})
+    for line in logs:
+        print("   ", line)
+
+    r.check("同一模组重复导入不被拒", merged is True)
+    r.check("没有触发冲突日志", not any("install_asm_conflict" in x for x in logs))
+    r.check("dll 字节不变", tk_dll.read_bytes() == b"MZ_SAME_DLL")
+    r.check("meta GUID 已刷新成新 GUID（否则重导自己反而挂空）",
+            NEW in (tk_dll.with_name(tk_dll.name + ".meta")).read_text(encoding="utf-8"))
+    r.check("并入了新部件", (toolkit / "Assets" / "Resources" / "Parts" / "Mod A"
+                       / "Alpha.prefab").is_file())
+
+    # ---- 只有 dll 才按内容拦；贴图/材质同名不同内容是正常变体，不能误伤 ----
+    tk2 = make_toolkit(tmp / "ToolkitNoAsm")
+    write(tk2 / "Assets" / "Textures" / "metal.png", "ORIGINAL")
+    write(tk2 / "Assets" / "Textures" / "metal.png.meta", unity_meta("9" * 32))
+    pkg2 = tmp / "PkgNoAsm"
+    write(pkg2 / "Assets" / "Textures" / "metal.png", "FROM_MOD")
+    write(pkg2 / "Assets" / "Textures" / "metal.png.meta", unity_meta("9" * 32))
+    import sfs_pack_core as ka
+    r.check("贴图同名不同内容不判程序集冲突（MERGE_SKIP 语义之外的误伤面为零）",
+            ka.detect_assembly_conflicts(tk2, pkg2, "Mod A") == [])
+
+
 def test_merge_keeps_mod_dll(tmp: Path, r: Result) -> None:
     print("\n=== 5. 合并包必须携带 mod 自有程序集(DLL) ===")
     import sfs_pack_core as ka
@@ -1080,6 +1279,8 @@ def main() -> int:
         test_install_never_overwrites(tmp, r)
         test_install_repairs_dangling(tmp, r)
         test_install_replaces_stale_guid(tmp, r)
+        test_install_refuses_assembly_conflict(tmp, r)
+        test_install_same_asm_reimport_allowed(tmp, r)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("\n" + ("ALL PASS" if r.ok else "SOME FAILED"))

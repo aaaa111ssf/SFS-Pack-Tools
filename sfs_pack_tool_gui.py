@@ -146,8 +146,15 @@ TEXT = {
         "install_nothing": "[安装] 没有新文件需要写入 Toolkit",
         "install_replaced_stale": "[安装] 已替换 {n} 个 GUID 过期的同名残留(上一轮导入留下的旧版本占位 会让贴图/材质挂空) 原文件已备份到 {path}",
         "install_repair_done": "[安装] 已修复 {n} 个引用悬空的既有资产 原文件已备份到 {path}",
+        "install_asm_conflict": "[安装] [!] 拒绝并入 Toolkit：已有内容不同的同名程序集 {names}（一个文件都没写）详见下方弹窗",
+        "install_asm_conflict_item": "[安装] [!] 程序集 {name}（{rel}）已被占用：Toolkit 里是 {old_owner} 的程序集（guid {old_guid}），本次要装的是 {new_owner} 的（guid {new_guid}）",
+        "install_asm_conflict_scan_fail": "[安装] [!] 同名程序集预检失败（{error}）已保守拒绝并入 以免顶掉 Toolkit 里已有的程序集 请重试或反馈",
+        "install_asm_conflict_title": "同名程序集冲突 已拒绝合并",
+        "install_asm_conflict_scan_fail_body": "工具没能完成「同名程序集」预检（原因见日志），已保守拒绝把合并包并入 Toolkit，一个文件都没写。\n\n注意：这**不是**发现了冲突，而是预检自己判不准。这道预检防的是「后装的模组把 Toolkit 里已有的程序集静默顶掉、让先装模组的部件脚本全部 missing script」。判不准时宁可停下报错，也不放行去赌一把。\n\n请重试一次；若仍失败，请把日志里那条错误连同本弹窗一起反馈。\n\n合并包仍在原处，可自行处理：{path}",
+        "install_asm_conflict_body": "Toolkit 里已经有**内容不同**的同名程序集，已拒绝把本次合并包并进去（一个文件都没写）。\n\n{list}\n\n程序集文件名不能改：Unity 的 MonoScript 里 m_AssemblyName 就是它，改了 Unity 就认不出里面的类。两个模组的 dll 撞名时只有先装的能保住，继续导入会让先装那个模组的部件脚本全部 missing script。\n\n怎么办：\n• 一份 Toolkit 目前只放得下一份 mod 程序集。要同时用两个带自定义脚本的模组，请自行把两份 dll 合成一份（第二个 dll 里的类要改名，否则 Unity 报 CS0101 类型重复定义），再走本工具导入。\n• 只想用一个：把先装那个模组的部件 prefab 与 Assets/Plugins 下的 dll 及 .meta 删干净，再导入本模组。\n• 如果这两份 dll 其实来自同一个模组，说明文件被改动过，请人工核对后再导入。\n\n合并包仍在原处，可自行处理：{path}",
         "packdata_done": "[PackData] 已自动生成 PackData 资产 {path} 并统一 {labeled} 个资产标签 {label} Unity 里 SFS→打包模组包 选资产+标签即可出包",
         "packdata_fail": "[PackData] [!] 自动生成失败 {error} 可在 Unity 手动创建",
+        "packdata_skipped_refused": "[PackData] 并入被拒 未生成 PackData 资产(Toolkit 里还没有这个模组的任何东西 盖了也是空入口)",
         "log_dedupe_fail": "[去重] [!] 工程内去重失败 {exc}",
         "repair_start": "开始清理 Toolkit 里残留的 AssetRipper 空壳着色器(零件渲成黑板的根因)...",
         "repair_done": "[修复] 已删除 {stubs} 个空壳着色器 重写 {refs} 处材质引用 同步 {names} 个资产名 备份于 {backup}",
@@ -313,8 +320,15 @@ TEXT = {
         "install_nothing": "[Install] No new files need to be written to the Toolkit",
         "install_replaced_stale": "[Install] Replaced {n} same-named leftovers with stale GUIDs (old versions occupying the slot cause missing textures/materials); originals backed up to {path}",
         "install_repair_done": "[Install] Repaired {n} existing assets with dangling refs; originals backed up to {path}",
+        "install_asm_conflict": "[Install] [!] Refused to merge into the Toolkit: same-named assemblies with different content already exist ({names}); nothing was written. See the popup below.",
+        "install_asm_conflict_item": "[Install] [!] Assembly {name} ({rel}) is taken: the Toolkit has {old_owner}'s copy (guid {old_guid}), this import brings {new_owner}'s (guid {new_guid})",
+        "install_asm_conflict_scan_fail": "[Install] [!] Same-named assembly pre-check failed ({error}); the merge was refused to avoid overwriting an assembly already in the Toolkit. Retry or report this.",
+        "install_asm_conflict_title": "Assembly name conflict - merge refused",
+        "install_asm_conflict_scan_fail_body": "The tool could not complete the same-named assembly pre-check (see the log), so the merge package was NOT merged into the Toolkit (nothing was written).\n\nNote: this is NOT a detected conflict - the pre-check itself could not decide. It guards against a later mod silently replacing an assembly already in the Toolkit, which leaves the earlier mod's part scripts as missing script. When it cannot decide, it stops and reports rather than gambling.\n\nPlease retry; if it keeps failing, report it along with the error line in the log.\n\nThe merge package is still at: {path}",
+        "install_asm_conflict_body": "The Toolkit already has a same-named assembly with **different content**, so the merge package was NOT merged in (nothing was written).\n\n{list}\n\nAn assembly filename cannot be renamed: Unity's MonoScript stores it in m_AssemblyName, and Unity cannot resolve the classes inside once it changes. When two mods' dlls share a name only the first one survives - importing the second leaves the first mod's part scripts as missing script.\n\nWhat to do:\n- A Toolkit currently holds one mod assembly. To use two mods with custom scripts at once, merge the two dlls by hand (rename the classes in the second dll, otherwise Unity reports CS0101 duplicate type definition), then import with this tool.\n- Using only one: delete the earlier mod's part prefabs and its dll + .meta under Assets/Plugins, then import this mod.\n- If both dlls really come from the same mod, the file was modified - review it by hand before importing.\n\nThe merge package is still at: {path}",
         "packdata_done": "[PackData] Generated PackData asset {path} and labeled {labeled} assets '{label}'. In Unity: SFS -> Build Pack, pick the asset + label to build.",
         "packdata_fail": "[PackData] [!] Auto-generation failed: {error} (create it manually in Unity)",
+        "packdata_skipped_refused": "[PackData] Merge was refused; no PackData asset generated (nothing of this mod is in the Toolkit yet, so it would be an empty build entry).",
         "log_dedupe_fail": "[Dedupe] [!] In-project dedupe failed: {exc}",
         "repair_start": "Cleaning leftover AssetRipper stub shaders in the Toolkit (the cause of black parts)...",
         "repair_done": "[Repair] Deleted {stubs} stub shaders, rewrote {refs} material refs, synced {names} asset names. Backup at {backup}",
@@ -697,6 +711,28 @@ def _zh2en(msg: str) -> str:
         if zh in out:
             out = out.replace(zh, en)
     return out
+
+
+def format_asm_conflicts(conflicts: list[dict], limit: int = 6) -> str:
+    """把同名程序集冲突清单排成弹窗用的多行文本（逐条点名是哪两个模组）。
+
+    模组名反查不到时显示 "?"——宁可留个空让人问，也不要编一个模组名。
+    独立成函数：弹窗正文要能离线断言（见 test_core_smoke 的 P0-1 用例）。
+    """
+    lines: list[str] = []
+    for c in conflicts[:limit]:
+        old = c.get("existing_owner") or "?"
+        new = c.get("incoming_owner") or "?"
+        old_g = (c.get("existing_guid") or "?")[:8]
+        new_g = (c.get("incoming_guid") or "?")[:8]
+        lines.append(
+            f"• {c.get('name', '?')}（{c.get('rel', '?')}）\n"
+            f"    Toolkit 现有：{old} 的程序集（guid {old_g}）\n"
+            f"    本次要装：{new} 的程序集（guid {new_g}）"
+        )
+    if len(conflicts) > limit:
+        lines.append("...")
+    return "\n".join(lines)
 
 
 def resource_path(relative: str) -> Path:
@@ -2078,20 +2114,26 @@ class App:
                     log(self.t("install_skipped_opt"))
                 else:
                     advance()
-                    self.install_into_toolkit(log, Path(toolkit_dir), Path(str(mrep["package_dir"])), mrep)
+                    merged = self.install_into_toolkit(
+                        log, Path(toolkit_dir), Path(str(mrep["package_dir"])), mrep)
                     # 2.5) 自动生成 PackData 资产 + 统一 AssetBundle 标签：
                     #      并入后用户在 Unity 的 ModBuilder 里选资产+标签即可一键出包
+                    #      并入被拒（同名程序集冲突，一个文件都没写）时不能盖章：
+                    #      Toolkit 里还没有这个模组的任何东西，盖出来是个空出包入口。
                     advance()
-                    try:
-                        import sfs_pack_core as keepalive
-                        mod_name = keepalive.mod_folder_name(Path(self.input_file))
-                        prep = keepalive.generate_pack_data(
-                            Path(toolkit_dir), Path(self.input_file), mod_name, log=self.tlog)
-                        if prep.get("ok"):
-                            log(self.t("packdata_done", path=prep.get("packdata", ""),
-                                       labeled=prep.get("labeled", 0), label=mod_name))
-                    except Exception as exc:
-                        log(self.t("packdata_fail", error=exc))
+                    if not merged:
+                        log(self.t("packdata_skipped_refused"))
+                    else:
+                        try:
+                            import sfs_pack_core as keepalive
+                            mod_name = keepalive.mod_folder_name(Path(self.input_file))
+                            prep = keepalive.generate_pack_data(
+                                Path(toolkit_dir), Path(self.input_file), mod_name, log=self.tlog)
+                            if prep.get("ok"):
+                                log(self.t("packdata_done", path=prep.get("packdata", ""),
+                                           labeled=prep.get("labeled", 0), label=mod_name))
+                        except Exception as exc:
+                            log(self.t("packdata_fail", error=exc))
 
             # 4) 导出后自检：校验导出工程所有 prefab 的脚本引用是否在 Toolkit 命中
             try:
@@ -2137,8 +2179,31 @@ class App:
         except Exception:
             pass
 
-    def install_into_toolkit(self, log, toolkit_dir: Path, package_dir: Path, mrep: dict[str, object]) -> None:
+    def _assembly_conflict_popup(self, conflicts: list[dict], package_dir: Path) -> None:
+        """同名程序集冲突弹窗（方案 A / P0-1）。同 _gate_popup：得回主线程弹。"""
+        body = self.t("install_asm_conflict_body",
+                      list=format_asm_conflicts(conflicts), path=str(package_dir))
+        title = self.t("install_asm_conflict_title")
+        try:
+            self._ui(lambda: messagebox.showwarning(title, body))
+        except Exception:
+            pass
+
+    def _asm_scan_failed_popup(self, package_dir: Path) -> None:
+        """预检自身出错时的弹窗：说明这是「判不准所以保守拒绝」，不是发现了冲突。"""
+        title = self.t("install_asm_conflict_title")
+        body = self.t("install_asm_conflict_scan_fail_body", path=str(package_dir))
+        try:
+            self._ui(lambda: messagebox.showwarning(title, body))
+        except Exception:
+            pass
+
+    def install_into_toolkit(self, log, toolkit_dir: Path, package_dir: Path, mrep: dict[str, object]) -> bool:
         """把合并包并入 Toolkit。
+
+        返回 False = **并入被拒**（同名程序集冲突，一个文件都没写进 Toolkit），
+        调用方据此跳过 PackData 盖章——没并进去还盖个出包入口等于骗用户。
+        其余情况（含闸门 GUID 冲突那种只报不写的）返回 True，保持原行为。
 
         默认只写新文件、绝不覆盖既有内容。两个例外（都会先备份到
         `<Toolkit>/_PackToolBackup/<时间戳>/`）：
@@ -2149,18 +2214,52 @@ class App:
         2. **悬空引用修复**：同名资产引用大量悬空，而包里这份悬空更少。
 
         判据都是"只会往好的方向改"，不会把好的改坏。
+
+        动手之前先过一道**同名程序集预检**（P0-1 方案 A）：Toolkit 里若已有内容
+        不同的同名 dll，就地拒绝整个并入并弹窗点名两个模组。少了这一步，后装的
+        模组会经「例外 1」静默顶掉先装的 dll，先装模组的部件脚本全部 missing
+        script，而日志只有一行"已替换 N 个同名残留"，看不出出了事。
         """
         collisions = mrep.get("guid_collisions") or []
         if collisions:
             log(self.t("install_refused", n=len(collisions)))
-            return
+            return True  # 闸门分支另有处理，这里保持原行为：只报不写
         pkg_assets = package_dir / "Assets"
         tk_assets = toolkit_dir / "Assets"
         if not pkg_assets.is_dir():
-            return
+            return True
 
         # 悬空判断用的已知 GUID 全集：Toolkit 现有的 + 包内带的
         import sfs_pack_core as keepalive
+
+        # --- P0-1 预检：一个文件都还没写，先看会不会撞掉别人的程序集 ---
+        try:
+            asm_conflicts = keepalive.detect_assembly_conflicts(
+                toolkit_dir, package_dir, str(mrep.get("parts_subfolder", "") or ""))
+        except Exception as exc:
+            # 预检自己出错 = 判不准。这道闸门防的就是"静默顶掉别人的程序集"，
+            # 判不准时宁可停下报错（并入本就是可选项，重试代价小），也不能
+            # 放行去赌一把——赌输了先装那个模组的部件脚本就全挂了。
+            log(self.t("install_asm_conflict_scan_fail", error=exc))
+            try:
+                self._asm_scan_failed_popup(package_dir)
+            except Exception:
+                pass
+            return False
+        if asm_conflicts:
+            for c in asm_conflicts:
+                log(self.t("install_asm_conflict_item",
+                           name=c["name"], rel=c["rel"],
+                           old_owner=c["existing_owner"] or "?", old_guid=c["existing_guid"] or "?",
+                           new_owner=c["incoming_owner"] or "?", new_guid=c["incoming_guid"] or "?"))
+            log(self.t("install_asm_conflict",
+                       names=", ".join(c["name"] for c in asm_conflicts)))
+            try:
+                self._assembly_conflict_popup(asm_conflicts, package_dir)
+            except Exception:
+                pass
+            return False  # 就地拒绝：一个文件都没写，合并包仍留在原处供人工处理
+
         known: set[str] = set()
         for meta in tk_assets.rglob("*.meta"):
             g = keepalive._meta_guid(meta)
@@ -2250,7 +2349,7 @@ class App:
                     written_parts += 1
         except OSError as exc:
             log(self.t("install_failed", error=exc))
-            return
+            return True  # 半途失败已报日志：不额外触发"被拒"分支的跳过逻辑
         if replaced_stale:
             log(self.t("install_replaced_stale", n=replaced_stale, path=backup_root))
         if repaired:
@@ -2264,6 +2363,7 @@ class App:
             log(self.t("install_wrote_files", n=written, path=tk_assets))
         elif not (repaired or replaced_stale):
             log(self.t("install_nothing"))
+        return True
 
 
 if __name__ == "__main__":

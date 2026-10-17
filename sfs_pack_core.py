@@ -1858,6 +1858,89 @@ def _merge_copy_custom_scripts(project_assets: Path, prefabs: list, package_asse
     return stats
 
 
+# 安装前预检要比对「内容」的托管程序集后缀。只限程序集：贴图/材质同名不同内容
+# 属于正常变体(build_merge_package 已能改名保留)，不能在这里一并拦下。
+ASSEMBLY_SUFFIXES = {".dll"}
+
+
+def _mod_owner_of_guid(assets: Path, guid: str) -> str:
+    """反查这个 GUID 是哪个模组的部件在用（按 Assets/Resources/Parts/<模组名>）。
+
+    用于冲突时点名"是哪个模组的程序集"。查不到就返回空串——宁可说不知道，
+    也不能编一个模组名出来误导用户。
+    """
+    if not guid:
+        return ""
+    parts_root = Path(assets) / "Resources" / "Parts"
+    if not parts_root.is_dir():
+        return ""
+    needle = guid.lower()
+    for sub in sorted(p for p in parts_root.iterdir() if p.is_dir()):
+        for prefab in sub.rglob("*.prefab"):
+            try:
+                text = prefab.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if needle in text.lower():
+                return sub.name
+    return ""
+
+
+def detect_assembly_conflicts(
+    toolkit_root: Path, package_dir: Path, incoming_owner: str = "",
+) -> list[dict]:
+    """预检：Toolkit 里已有**内容不同**的同名程序集 → 不能并入（方案 A / P0-1）。
+
+    背景（三层叠加）：程序集文件名天生不唯一——方案 B 把每个模组的 dll 都落成
+    `Assets/Plugins/CodeAssembly.dll`，且**不能改名**（MonoScript 的
+    m_AssemblyName 就是这个文件名，改了 Unity 认不出里面的类）；安装层的
+    「GUID 过期占位」例外判据是"同名 + GUID 不同 + 新 GUID 被包内引用"，
+    对 dll **恰好全部成立**，于是后装的模组会把 dll 静默覆盖到先装的上面，
+    先装模组的部件脚本全部悬空(missing script)，日志却只有一行
+    "已替换 N 个 GUID 过期的同名残留"，用户完全看不出来自己弄坏了前一个模组。
+
+    这里只在**内容字节不同**时判冲突，两种情况必须分开：
+    - 字节相同 = 同一个模组重复导入（每次导出都会重新生成 .meta GUID），
+      照常覆盖以刷新 GUID；否则重导同一个模组反而会让它自己挂空。
+    - 字节不同 = 两个模组各带一份程序集，拒绝并入，交人工处理。
+
+    读取失败一律**不判冲突**（宁可漏拦也不误拦，真撞上了还有上面的兜底日志）。
+
+    返回冲突清单 [{name, rel, existing_guid, incoming_guid, existing_owner,
+    incoming_owner, existing_path}]；空列表表示可以安全并入。
+    """
+    tk_assets = Path(toolkit_root) / "Assets"
+    pkg_assets = Path(package_dir) / "Assets"
+    if not tk_assets.is_dir() or not pkg_assets.is_dir():
+        return []
+    conflicts: list[dict] = []
+    for src in sorted(pkg_assets.rglob("*")):
+        if not src.is_file() or src.suffix.lower() not in ASSEMBLY_SUFFIXES:
+            continue
+        dest = tk_assets / src.relative_to(pkg_assets)
+        if not dest.is_file():
+            continue
+        try:
+            same = (dest.stat().st_size == src.stat().st_size
+                    and dest.read_bytes() == src.read_bytes())
+        except OSError:
+            continue
+        if same:
+            continue  # 同一个模组重复导入，放行（要靠覆盖刷新 GUID）
+        existing_guid = _meta_guid(Path(str(dest) + ".meta"))
+        incoming_guid = _meta_guid(Path(str(src) + ".meta"))
+        conflicts.append({
+            "name": src.name,
+            "rel": src.relative_to(pkg_assets).as_posix(),
+            "existing_guid": existing_guid,
+            "incoming_guid": incoming_guid,
+            "existing_owner": _mod_owner_of_guid(tk_assets, existing_guid),
+            "incoming_owner": incoming_owner or _mod_owner_of_guid(pkg_assets, incoming_guid),
+            "existing_path": str(dest),
+        })
+    return conflicts
+
+
 def _parts_subfolder_name(pack_path: Path) -> str:
     """新增部件归入的子目录名：取 .pack 文件名，去掉文件系统非法字符。
 
