@@ -70,6 +70,10 @@ TEXT = {
         "chinese": "中文",
         "english": "English",
         "input_frame": "输入文件",
+        "tab_restore": "① 还原（导入工程）",
+        "tab_translate": "② 汉化",
+        "tab_strip": "③ 剥离",
+        "tab_hint": "选 .pack 后在对应标签页里操作；切换标签页不会中断正在跑的任务。",
         "select_pack": "选择原始 mod.pack",
         "select_translation": "选择翻译 JSON",
         "no_pack": "尚未选择 mod.pack",
@@ -265,6 +269,10 @@ TEXT = {
         "chinese": "中文",
         "english": "English",
         "input_frame": "Input Files",
+        "tab_restore": "1. Restore (import)",
+        "tab_translate": "2. Localization",
+        "tab_strip": "3. Strip",
+        "tab_hint": "Pick a .pack, then work in the matching tab; switching tabs never interrupts a running task.",
         "select_pack": "Select mod.pack",
         "select_translation": "Select translation",
         "no_pack": "No mod.pack selected",
@@ -1529,8 +1537,9 @@ class App:
         if isinstance(saved_geo, str) and re.match(r"^\d{3,}x\d{3,}([+-]\d+){1,2}$", saved_geo):
             self.root.geometry(saved_geo)
         else:
-            self.root.geometry("1080x900")
-        self.root.minsize(960, 800)
+            self.root.geometry("1080x760")
+        # 标签页布局下每个功能各占一屏，窗口不必再拉那么高
+        self.root.minsize(940, 620)
         self.language_var.set(self.t("chinese") if self.locale == "zh" else self.t("english"))
 
         header = tk.Frame(self.root)
@@ -1555,12 +1564,48 @@ class App:
         self.translation_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
         source.columnconfigure(1, weight=1)
 
-        translate_frame = tk.LabelFrame(self.root, text=self.t("translator_frame"), padx=8, pady=6)
-        translate_frame.pack(fill="x", padx=12, pady=4)
+        # ---- 任务栏式布局：还原 / 汉化 / 剥离 三个标签页 ----
+        # 之前三个功能竖着堆在一个长页面里，窗口得拉很高才够用；标签页让每块
+        # 内容各占一屏，切换不影响正在跑的任务（任务都在后台线程里）。
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=4)
+
+        tab_restore = tk.Frame(self.notebook, padx=10, pady=10)
+        tab_translate = tk.Frame(self.notebook, padx=10, pady=10)
+        tab_strip = tk.Frame(self.notebook, padx=10, pady=10)
+        self.notebook.add(tab_restore, text=self.t("tab_restore"))
+        self.notebook.add(tab_translate, text=self.t("tab_translate"))
+        self.notebook.add(tab_strip, text=self.t("tab_strip"))
+        self._tab_widgets = {
+            "restore": tab_restore, "translate": tab_translate, "strip": tab_strip,
+        }
+
+        # --- 标签页 1：还原（导出 Unity 工程并入 Toolkit）---
+        export = tk.LabelFrame(tab_restore, text=self.t("export_frame"), padx=8, pady=8)
+        export.pack(fill="x", padx=2, pady=2)
+        tk.Label(export, text=self.t("toolkit_dir")).grid(row=0, column=0, sticky="w")
+        tk.Entry(export, textvariable=self.toolkit_dir_var).grid(row=0, column=1, sticky="ew", padx=5)
+        # 浏览按钮：弹目录选择框选 Modding Toolkit 工程根（自动上溯校正）
+        tk.Button(export, text=self.t("select_toolkit"), command=self.pick_toolkit_dir, width=14)\
+            .grid(row=0, column=2, padx=3)
+        tk.Label(export, text=self.t("builtin_ripper_hint"), fg="#555555", wraplength=760, justify="left").grid(row=1, column=1, columnspan=2, sticky="w", padx=5)
+        tk.Label(export, text=self.t("toolkit_hint"), fg="#555555", wraplength=760, justify="left").grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
+        tk.Checkbutton(export, text=self.t("install_opt"), variable=self.install_var,
+                       command=self.save_user_settings, anchor="w", justify="left").grid(row=3, column=1, sticky="w", padx=5, pady=(7, 0))
+        self.export_btn = self._register_busy_button(
+            tk.Button(export, text=self.t("export"), command=self.start_export, bg="#e6f7ff", width=14))
+        self.export_btn.grid(row=3, column=2, padx=3, pady=(7, 0))
+        # 独立的「修复 Toolkit 空壳着色器·悬空引用」按钮已删除（冗余入口）：
+        # 空壳着色器清理与悬空引用自愈由一键导出工程自动完成（repair_toolkit）
+        export.columnconfigure(1, weight=1)
+
+        # --- 标签页 2：汉化 ---
+        translate_frame = tk.LabelFrame(tab_translate, text=self.t("translator_frame"), padx=8, pady=8)
+        translate_frame.pack(fill="x", padx=2, pady=2)
         tk.Label(translate_frame, text=self.t("author")).grid(row=0, column=0, sticky="w")
         tk.Entry(translate_frame, textvariable=self.author_var, width=55).grid(row=0, column=1, columnspan=2, sticky="ew", padx=5)
         tk.Label(translate_frame, text=self.t("extract_path")).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        tk.Entry(translate_frame, textvariable=self.extract_output_var).grid(row=1, column=1, sticky="ew", padx=5, pady=(5, 0))
+        tk.Entry(translate_frame, textvariable=self.extract_output_var).grid(row=1, column=1, columnspan=2, sticky="ew", padx=5, pady=(5, 0))
         tk.Button(translate_frame, text=self.t("select_json_path"), command=self.pick_extract_output, width=14).grid(row=1, column=2, padx=3, pady=(5, 0))
         self._register_busy_button(tk.Button(
             translate_frame, text=self.t("extract"), width=16,
@@ -1574,26 +1619,9 @@ class App:
                 task_key="progress_write"))).grid(row=2, column=1, sticky="w", padx=5, pady=6)
         translate_frame.columnconfigure(1, weight=1)
 
-        export = tk.LabelFrame(self.root, text=self.t("export_frame"), padx=8, pady=8)
-        export.pack(fill="x", padx=12, pady=4)
-        tk.Label(export, text=self.t("toolkit_dir")).grid(row=0, column=0, sticky="w")
-        tk.Entry(export, textvariable=self.toolkit_dir_var).grid(row=0, column=1, sticky="ew", padx=5)
-        # 浏览按钮：弹目录选择框选 Modding Toolkit 工程根（自动上溯校正）
-        tk.Button(export, text=self.t("select_toolkit"), command=self.pick_toolkit_dir, width=14)\
-            .grid(row=0, column=2, padx=3)
-        tk.Label(export, text=self.t("builtin_ripper_hint"), fg="#555555", wraplength=650, justify="left").grid(row=1, column=1, columnspan=2, sticky="w", padx=5)
-        tk.Label(export, text=self.t("toolkit_hint"), fg="#555555", wraplength=650, justify="left").grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
-        tk.Checkbutton(export, text=self.t("install_opt"), variable=self.install_var,
-                       command=self.save_user_settings, anchor="w", justify="left").grid(row=3, column=1, sticky="w", padx=5, pady=(7, 0))
-        self.export_btn = self._register_busy_button(
-            tk.Button(export, text=self.t("export"), command=self.start_export, bg="#e6f7ff", width=14))
-        self.export_btn.grid(row=3, column=2, padx=3, pady=(7, 0))
-        # 独立的「修复 Toolkit 空壳着色器·悬空引用」按钮已删除（冗余入口）：
-        # 空壳着色器清理与悬空引用自愈由一键导出工程自动完成（repair_toolkit）
-        export.columnconfigure(1, weight=1)
-
-        strip = tk.LabelFrame(self.root, text=self.t("strip_frame"), padx=8, pady=8)
-        strip.pack(fill="x", padx=12, pady=4)
+        # --- 标签页 3：剥离 ---
+        strip = tk.LabelFrame(tab_strip, text=self.t("strip_frame"), padx=8, pady=8)
+        strip.pack(fill="x", padx=2, pady=2)
         tk.Label(strip, text=self.t("strip_hint"), fg="#555555", wraplength=820, justify="left").grid(row=0, column=0, columnspan=4, sticky="w", padx=2)
         tk.Label(strip, text=self.t("target_platform")).grid(row=1, column=0, sticky="w", pady=(7, 0))
         plat_box = tk.Frame(strip)
@@ -1616,6 +1644,11 @@ class App:
         tk.Button(strip, text=self.t("pick_strip_output"), command=self.pick_strip_output, width=14).grid(row=2, column=3, padx=4, pady=(7, 0))
         strip.columnconfigure(1, weight=1)
 
+        # 三个标签页共用同一句操作提示
+        for _tab in (tab_restore, tab_translate, tab_strip):
+            tk.Label(_tab, text=self.t("tab_hint"), fg="#777777",
+                     wraplength=780, justify="left").pack(fill="x", padx=4, pady=(10, 0))
+
         # 进度条 + 状态文字（放在日志栏正上方，切换语言时保留进度语义）
         progress_bar = tk.Frame(self.root)
         progress_bar.pack(fill="x", padx=12, pady=(8, 0))
@@ -1632,7 +1665,7 @@ class App:
             tk.Button(log_bar, text=self.t("clear_cache"), command=self.show_cache_dialog, width=12)
         ).pack(side="right", padx=(4, 0))
         tk.Button(log_bar, text=self.t("clear_log"), command=self._clear_log, width=10).pack(side="right")
-        self.log_widget = scrolledtext.ScrolledText(self.root, font=("Consolas", 10), height=15, state="disabled")
+        self.log_widget = scrolledtext.ScrolledText(self.root, font=("Consolas", 10), height=14, state="disabled")
         self.log_widget.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         if not self.logs:
             self.logs.append(self.t("ready"))
