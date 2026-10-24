@@ -157,12 +157,45 @@ def install_asset_ripper(tool_directory: Path, version: str | None = None) -> Pa
     return executable
 
 
-def resolve_asset_ripper(user_value: str | None, auto_download: bool) -> Path:
+def resolve_asset_ripper(
+    user_value: str | None, auto_download: bool, version: str | None = None,
+) -> Path:
+    """定位 AssetRipper 可执行文件。
+
+    优先级：显式指定 → （给了版本）该版本缓存/下载 → 内置版 → 最新版下载。
+
+    `version` 用于「内置版反编译效果不好」时换版本；给了 version 就**跳过内置版**，
+    否则"指定版本"会被内置版静默顶掉、用户以为换了其实没换——这种静默失败必须避免。
+    """
     if user_value:
         candidate = Path(user_value).expanduser().resolve()
         if not candidate.is_file():
             raise ExportError(f"指定的 AssetRipper 不存在 {candidate}")
         return candidate
+
+    if version:
+        # 1) 已下载缓存优先（重复导出同一版本不必再下一遍）
+        target = RUNTIME_DATA_DIR / ".assetripper" / f"v{version}"
+        cached = list(executable_candidates(target)) if target.is_dir() else []
+        if cached:
+            log(f"[*] 复用已下载的 AssetRipper {version}")
+            return cached[0]
+
+        # 2) 与**内置那份**同版本 → 直接用内置，别为了"换版本"再下一遍同样的东西。
+        #    必须精确比对 third_party/assetripper-<ver> 目录名：
+        #    用子串匹配的话 "1.1" 会命中 "assetripper-1.1.4"，"1.0.1" 也可能
+        #    命中缓存目录，导致"指定版本"名不副实。
+        for cand in bundled_asset_ripper_candidates():
+            parts = {part.lower() for part in Path(cand).parts}
+            if f"assetripper-{version}".lower() in parts:
+                log(f"[*] AssetRipper {version} 与内置版一致，直接使用内置版")
+                return cand
+
+        # 3) 需要下载
+        if not auto_download:
+            raise ExportError(
+                f"指定了 AssetRipper {version} 但本地没有缓存，且已禁用自动下载")
+        return install_asset_ripper(target, version=version)
 
     bundled = bundled_asset_ripper_candidates()
     if bundled:
@@ -590,6 +623,52 @@ def _dot_safe_zip(path: Path) -> Path:
     return Path(str(path) + ".zip")
 
 
+def resolve_output_paths(
+    input_path: Path, requested_output: Path, requested_zip: Path | None, overwrite: bool,
+) -> tuple[Path, Path, bool]:
+    """决定最终输出目录与 ZIP 路径，落实 `--overwrite` 的语义。
+
+    overwrite=False（默认）时沿用编号策略，绝不覆盖既有产物；
+    overwrite=True 时才用请求的路径本身，并且**只删我们自己上一轮生成的东西**
+    （请求目录 / ZIP），绝不触碰路径外的任何文件。
+
+    返回 (output_dir, zip_path, cleared)。
+    """
+    requested_zip_path = requested_zip or _dot_safe_zip(requested_output)
+    if not overwrite:
+        output_dir = numbered_directory(requested_output)
+        zip_path = numbered_file(requested_zip) if requested_zip else _dot_safe_zip(output_dir)
+        if output_dir != requested_output:
+            log(f"[*] 为保护已有文件 工程将导出到新目录 {output_dir}")
+        if requested_zip and zip_path != requested_zip:
+            log(f"[*] 为保护已有文件 ZIP 将保存为 {zip_path}")
+        return output_dir, zip_path, False
+
+    # --overwrite：清掉同名旧产物，然后原地写
+    cleared = False
+    if requested_output.is_dir():
+        log(f"[*] --overwrite 已启用 清理旧输出目录 {requested_output}")
+        shutil.rmtree(requested_output, ignore_errors=True)
+        cleared = True
+    if requested_zip_path.is_file():
+        try:
+            requested_zip_path.unlink()
+            log(f"[*] --overwrite 已启用 删除旧 ZIP {requested_zip_path}")
+            cleared = True
+        except OSError as exc:
+            log(f"[!] 旧 ZIP 删除失败 将改用新文件名 {exc}")
+    # 清完还残留（删不掉）就编号，避免写到一半失败
+    output_dir = requested_output
+    if output_dir.exists():
+        output_dir = numbered_directory(requested_output)
+        log(f"[!] 旧目录无法清理 改导出到 {output_dir}")
+    zip_path = requested_zip_path
+    if zip_path.exists():
+        zip_path = numbered_file(zip_path)
+        log(f"[!] 旧 ZIP 无法清理 改保存为 {zip_path}")
+    return output_dir, zip_path, cleared
+
+
 def export_prefabs(args: argparse.Namespace) -> None:
     input_path = Path(args.input).expanduser().resolve()
     if not input_path.is_file():
@@ -598,14 +677,14 @@ def export_prefabs(args: argparse.Namespace) -> None:
     requested_output = Path(args.output_dir).expanduser().resolve()
     requested_zip = Path(args.zip).expanduser().resolve() if args.zip else None
     validate_output_location(input_path, requested_output, requested_zip or _dot_safe_zip(requested_output))
-    output_dir = numbered_directory(requested_output)
-    zip_path = numbered_file(requested_zip) if requested_zip else _dot_safe_zip(output_dir)
-    if output_dir != requested_output:
-        log(f"[*] 为保护已有文件 工程将导出到新目录 {output_dir}")
-    if requested_zip and zip_path != requested_zip:
-        log(f"[*] 为保护已有文件 ZIP 将保存为 {zip_path}")
+    output_dir, zip_path, _cleared = resolve_output_paths(
+        input_path, requested_output, requested_zip, bool(getattr(args, "overwrite", False)))
 
-    executable = resolve_asset_ripper(args.asset_ripper, auto_download=not args.no_download)
+    executable = resolve_asset_ripper(
+        args.asset_ripper,
+        auto_download=not args.no_download,
+        version=getattr(args, "asset_ripper_version", None),
+    )
     log(f"[*] 使用 AssetRipper {executable}")
 
     with tempfile.TemporaryDirectory(prefix="sfs_prefab_export_") as temporary_directory:
@@ -689,28 +768,167 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="从 SFS .pack 一键导出真实 Unity Prefab 调用官方 AssetRipper",
         formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "批量导出（与 GUI 的批量能力对齐）：\n"
+            "  python sfs_project_exporter.py -i a.pack\n"
+            "  python sfs_project_exporter.py -i a.pack b.pack c.pack -o out\n"
+            "\n"
+            "其它子命令：\n"
+            "  --preview  <合并包目录> <Toolkit>   只比较不写入\n"
+            "  --backups  <Toolkit>               列出现有备份\n"
+            "  --restore  <Toolkit> <时间戳>       回滚（默认预演，加 --apply 才写）\n"
+        ),
     )
-    parser.add_argument("-i", "--input", required=True, help="原始 .pack 文件路径")
+    parser.add_argument(
+        "-i", "--input", required=False, nargs="+", default=[],
+        help="原始 .pack 文件路径（可给多个，逐个导出）",
+    )
     parser.add_argument(
         "-o", "--output-dir", default="SFS_Prefab_Export",
         help="导出的 Unity 工程目录 默认 SFS_Prefab_Export",
     )
     parser.add_argument("--zip", help="输出 ZIP 文件路径 默认与 --output-dir 同名")
     parser.add_argument("--asset-ripper", help="AssetRipper.GUI.Free 或 .exe 可执行文件路径")
+    parser.add_argument(
+        "--asset-ripper-version", metavar="VER",
+        help="改用指定版本的 AssetRipper（如 1.1.4 / 1.0.1）。\n"
+             "内置版反编译效果不好时用它换版本；会跳过内置版、优先用已下载缓存",
+    )
     parser.add_argument("--no-download", action="store_true", help="未找到 AssetRipper 时不自动从官方发布页下载")
     parser.add_argument("--no-zip", action="store_true", help="仅导出目录 不额外生成 ZIP")
-    parser.add_argument("--overwrite", action="store_true", help="允许覆盖已有输出目录和 ZIP")
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="允许覆盖已有输出目录和 ZIP（只清理本工具生成的那一份，不动其它文件）",
+    )
     parser.add_argument(
         "--platforms", choices=["single", "all"], default="single",
         help="解码平台 single=仅首选平台(Windows优先 默认 防止4平台部件重复) all=全部平台",
     )
+    parser.add_argument(
+        "--batch", action="store_true",
+        help="批量模式：多个 -i 逐个导出 单项失败不中断 结束时汇总",
+    )
+    parser.add_argument(
+        "--stop-on-error", action="store_true",
+        help="批量模式遇错立即停止（默认继续跑完剩余的）",
+    )
+    # ---- 与 GUI 对齐的辅助子命令 ----
+    parser.add_argument("--preview", nargs=2, metavar=("PACKAGE_DIR", "TOOLKIT_ROOT"),
+                        help="合并前预览：比较合并包与 Toolkit 现状，不写任何文件")
+    parser.add_argument("--backups", metavar="TOOLKIT_ROOT", help="列出该 Toolkit 下的全部备份")
+    parser.add_argument("--restore", nargs=2, metavar=("TOOLKIT_ROOT", "TIMESTAMP"),
+                        help="回滚到指定备份（默认只预演）")
+    parser.add_argument("--apply", action="store_true", help="配合 --restore：真正写入")
+    parser.add_argument("--probe", metavar="TOOLKIT_ROOT", help="探测 Toolkit 的 Unity/Toolkit 版本与脚本指纹")
     return parser
+
+
+def _cmd_preview(package_dir: str, toolkit_root: str) -> int:
+    import sfs_pack_toolbox as toolbox
+    result = toolbox.preview_merge(package_dir, toolkit_root)
+    for line in toolbox.format_preview(result):
+        print(line)
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_backups(toolkit_root: str) -> int:
+    import sfs_pack_toolbox as toolbox
+    backups = toolbox.list_backups(toolkit_root)
+    if not backups:
+        print("没有找到任何备份（_PackToolBackup 为空）")
+        return 0
+    print(f"共 {len(backups)} 条备份（新的在前）：")
+    for b in backups:
+        print(f"  {b.display}")
+    return 0
+
+
+def _cmd_restore(toolkit_root: str, timestamp: str, apply: bool) -> int:
+    import sfs_pack_toolbox as toolbox
+    result = toolbox.restore_backup(
+        toolkit_root, timestamp, dry_run=not apply, safety_backup=True,
+        log=lambda m: print(m),
+    )
+    if not result.get("ok"):
+        print(f"❌ {result.get('error', '回滚失败')}", file=sys.stderr)
+        return 1
+    if not apply:
+        print(f"预演完成：将还原 {result.get('would_restore', 0)} 个文件。"
+              f"确认无误后加 --apply 真正写入。")
+    else:
+        print(f"已还原 {result.get('restored', 0)} 个文件，跳过 {result.get('skipped', 0)} 个。")
+        if result.get("pre_backup"):
+            print(f"回滚前的现状已备份到 {result['pre_backup']}")
+    return 0
+
+
+def _cmd_probe(toolkit_root: str) -> int:
+    import sfs_pack_toolbox as toolbox
+    info = toolbox.probe_toolkit_version(toolkit_root)
+    if not info.get("ok"):
+        print(f"❌ {info.get('error', '探测失败')}", file=sys.stderr)
+        return 1
+    print(f"Unity 版本   : {info['unity_version'] or '未知'}")
+    print(f"Toolkit 版本 : {info['toolkit_version'] or '未知'}")
+    print(f"脚本文件数   : {info['script_files']}")
+    print(f"指纹         : {info['fingerprint'] or '未知'}")
+    return 0
+
+
+def _run_batch(args) -> int:
+    """批量导出多个 .pack；单项失败不中断。"""
+    import sfs_pack_toolbox as toolbox
+    inputs = [Path(p).expanduser().resolve() for p in args.input]
+    out_root = Path(args.output_dir).expanduser().resolve()
+    plan = toolbox.BatchPlan(inputs, out_root, log=lambda m: print(m))
+
+    def executor(item, log):
+        sub = argparse.Namespace(
+            input=str(item.pack),
+            output_dir=str(item.output),
+            zip=None,
+            asset_ripper=args.asset_ripper,
+            asset_ripper_version=getattr(args, "asset_ripper_version", None),
+            no_download=args.no_download,
+            no_zip=args.no_zip,
+            overwrite=args.overwrite,
+            platforms=args.platforms,
+        )
+        try:
+            export_prefabs(sub)
+            return True
+        except ExportError as exc:
+            item.message = str(exc)
+            return False
+
+    summary = plan.run(executor, stop_on_error=args.stop_on_error)
+    print("")
+    for line in plan.summary_lines():
+        print(line)
+    print(f"\n批量结果：成功 {summary['ok']} · 失败 {summary['failed']} · 跳过 {summary['skipped']}")
+    return 0 if summary["failed"] == 0 else 1
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    # 辅助子命令优先（都不需要 -i）
+    if args.preview:
+        return _cmd_preview(*args.preview)
+    if args.backups:
+        return _cmd_backups(args.backups)
+    if args.restore:
+        return _cmd_restore(args.restore[0], args.restore[1], args.apply)
+    if args.probe:
+        return _cmd_probe(args.probe)
+
+    if not args.input:
+        parser.error("需要 -i/--input 指定至少一个 .pack（或用 --preview/--backups/--restore/--probe）")
+
     try:
+        if args.batch or len(args.input) > 1:
+            return _run_batch(args)
         export_prefabs(args)
         return 0
     except ExportError as exc:

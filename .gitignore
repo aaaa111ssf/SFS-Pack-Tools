@@ -1,0 +1,17 @@
+# 构建产物
+dist/
+build/
+*.exe
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 临时解压 / 调试
+tmp_exe/
+*.log
+_debug.spec
+
+# 开发期临时脚本（build_kit 中 _ 开头，不应进仓库）
+_*.py

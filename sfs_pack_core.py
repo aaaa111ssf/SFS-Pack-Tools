@@ -776,7 +776,22 @@ def resolve_export_script_guids(
 
 
 def rewrite_script_guids(text: str, stub_to_toolkit: dict[str, str]) -> tuple[str, int]:
-    """把文本中命中 stub 的 m_Script GUID 替换为 Toolkit GUID，返回 (新文本, 替换次数)。"""
+    """把文本中命中 stub 的 m_Script GUID 替换为 Toolkit GUID，返回 (新文本, 替换次数)。
+
+    走 `sfs_unity_yaml` 的结构化解析而不是单行正则：等价写法（字段乱序、
+    block style、空格任意、guid 带引号）在真实工程里都出现过，旧正则对它们
+    **静默失配**——替换 0 次但没人报错，那些 prefab 的脚本引用就永远修不上。
+    """
+    try:
+        import sfs_unity_yaml as _yaml
+        return _yaml.rewrite_script_guids_stable(text, stub_to_toolkit)
+    except Exception:
+        # 解析器自身出问题时退回旧正则：宁可漏改也不能让整条流水线中断
+        return _rewrite_script_guids_regex(text, stub_to_toolkit)
+
+
+def _rewrite_script_guids_regex(text: str, stub_to_toolkit: dict[str, str]) -> tuple[str, int]:
+    """旧版单行正则实现，仅作解析器异常时的兜底。"""
     changed = 0
 
     def do_replace(mm: re.Match) -> str:
@@ -790,6 +805,19 @@ def rewrite_script_guids(text: str, stub_to_toolkit: dict[str, str]) -> tuple[st
     return SCRIPT_REF_RE.sub(do_replace, text), changed
 
 
+def _iter_script_refs(text: str):
+    """产出 (guid, fileID, type) 三元组；解析器不可用时退回正则。"""
+    try:
+        import sfs_unity_yaml as _yaml
+        for ref in _yaml.iter_script_refs(text):
+            yield ref.guid, ref.file_id, ref.type_
+        return
+    except Exception:
+        pass
+    for mm in SCRIPT_REF_RE.finditer(text):
+        yield mm.group(2), "11500000", "3"
+
+
 def collect_unresolved(text: str, stub_guid_to_class: dict[str, str], stub_to_toolkit: dict[str, str],
                        known_guids: set[str] | None = None) -> list[str]:
     """返回该文本里仍未解析(指向 stub 且未重写)的类名清单。
@@ -799,8 +827,7 @@ def collect_unresolved(text: str, stub_guid_to_class: dict[str, str], stub_to_to
     （典型是 mod 自带 dll：自定义类本来就指 dll，不需要重写），不该再报未解析。
     """
     unresolved: list[str] = []
-    for mm in SCRIPT_REF_RE.finditer(text):
-        guid = mm.group(2)
+    for guid, _fid, _typ in _iter_script_refs(text):
         if guid in stub_to_toolkit:
             continue
         if known_guids and guid in known_guids:
@@ -836,9 +863,9 @@ def verify_toolkit_self(toolkit_root, exclude_names: tuple[str, ...] = ()) -> di
             text = prefab.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        for mm in SCRIPT_REF_RE.finditer(text):
+        for guid, _fid, _typ in _iter_script_refs(text):
             result["refs"] += 1
-            if mm.group(2).lower() not in guids:
+            if guid.lower() not in guids:
                 result["missing"] += 1
     return result
 
@@ -1210,14 +1237,19 @@ def install_code_assembly_as_plugin(project_dir: Path, pack_path: Path, class_na
     """方案 B（默认）：把包内真实 CodeAssembly.dll 当托管插件放进工程，零改 prefab。
 
     要点：
-    - 落点 `Assets/Plugins/CodeAssembly.dll`，**必须保留原文件名**——MonoScript 的
-      m_AssemblyName 就是它，改名会让 Unity 认不出里面的类。
+    - 落点 `Assets/Plugins/<内部名>.dll`。Unity 按**程序集内部名**区分托管插件，
+      文件名本身不参与解析，但必须与内部名一致（MonoScript 的 m_AssemblyName 记的是内部名）。
+    - 两个模组的 dll 内部名都叫 `CodeAssembly` 时 Unity 只保留一份 → 后者顶掉前者、
+      前者部件全挂（P0-1）。所以这里优先把内部名改成**该模组唯一**的名字
+      （见 `_unique_assembly_for_mod`），文件名同步成 `<内部名>.dll`，两份即可共存。
+    - 内部名无法等长改写时退回原名 `CodeAssembly.dll`（旧行为，交给冲突预检拦截）。
     - 同时写一份 .meta（GUID 立即可用，便于导出前就确认引用能指到它）。
     - 顺手清掉会与 dll 撞类的 AssetRipper stub，避免 CS0101。
 
-    返回 {"ok","dll","guid","removed_stubs","reason"}
+    返回 {"ok","dll","guid","assembly","renamed","removed_stubs","reason","warning"}
     """
-    result: dict = {"ok": False, "dll": "", "guid": "", "removed_stubs": [], "reason": ""}
+    result: dict = {"ok": False, "dll": "", "guid": "", "assembly": "",
+                    "renamed": False, "removed_stubs": [], "reason": "", "warning": ""}
     base = Path(project_dir)
     assets = base / "Assets"
     if not assets.is_dir():
@@ -1231,7 +1263,15 @@ def install_code_assembly_as_plugin(project_dir: Path, pack_path: Path, class_na
 
     plugins = assets / "Plugins"
     plugins.mkdir(parents=True, exist_ok=True)
-    target = plugins / "CodeAssembly.dll"
+
+    # 唯一内部名：让同一份 Toolkit 能同时容纳多个带自定义脚本的模组
+    asm_name, rename_info = _unique_assembly_for_mod(dll, pack_path, plugins, log)
+    result["assembly"] = asm_name
+    result["renamed"] = bool(rename_info)
+    if rename_info:
+        result["warning"] = rename_info.get("warning", "")
+    target = plugins / f"{asm_name}.dll"
+
     blob = dll.read_bytes()
     if not (target.is_file() and target.read_bytes() == blob):
         target.write_bytes(blob)
@@ -1247,7 +1287,95 @@ def install_code_assembly_as_plugin(project_dir: Path, pack_path: Path, class_na
     if log:
         log(f"[自定义] 方案B 已落位插件 {target.name} ({len(blob):,} 字节 guid {guid[:8]}…) "
             f"→ 自定义类由 dll 提供 无需改写 prefab")
+        if rename_info:
+            log(f"[自定义] 程序集内部名 {rename_info['old']} → {asm_name}"
+                f"（多模组共存用；同名程序集会被 Unity 当成同一个，后者顶掉前者）")
+        if result["warning"]:
+            log(f"[自定义] [!] {result['warning']}")
     return result
+
+
+def _unique_assembly_for_mod(dll: Path, pack_path: Path, plugins: Path, log=None) -> tuple[str, dict]:
+    """把 dll 的内部名改成该模组唯一的名字，返回 (内部名, 改名结果或空 dict)。
+
+    改名是**原地等长替换**，会直接改动传入的 dll 文件——调用方拿到的就是已改名的
+    文件，落位即可。等长改写不动 PE 布局，零第三方依赖；长度不符时 rename_assembly
+    抛异常且**不写盘**，所以不会写坏程序集。
+
+    退化路径（都返回原名，不报错，交给冲突预检兜底）：
+      - 读不出内部名 / 不是托管程序集
+      - 内部名本来就不是 `CodeAssembly`（作者自己起过名，可能天然唯一）
+      - 新名与原名不等长
+    """
+    try:
+        import sfs_assembly_rename as rename
+    except ImportError:
+        return "CodeAssembly", {}
+
+    try:
+        current = rename.read_assembly_name(dll)
+    except Exception:
+        return "CodeAssembly", {}
+    # 空名说明解析失败：绝不能拿它拼文件名（会落成 Assets/Plugins/.dll）
+    if not current:
+        return "CodeAssembly", {}
+
+    # 已经不叫 CodeAssembly（作者起的是别的名字）就不再改
+    if current.lower() != "codeassembly":
+        return current, {}
+
+    taken = _assembly_names_in_use(plugins)
+    target_name = rename.unique_assembly_name(mod_folder_name(pack_path), taken)
+    try:
+        info = rename.rename_assembly(dll, target_name)
+    except Exception as exc:
+        if log:
+            log(f"[自定义] [!] 程序集改名失败 保持原名 {current} {exc}")
+        return current, {}
+    return target_name, info
+
+
+def _assembly_names_in_use(plugins: Path) -> set[str]:
+    """收集 Plugins 下已有 dll 的内部名，用于避免撞名。"""
+    names: set[str] = set()
+    try:
+        import sfs_assembly_rename as rename
+    except ImportError:
+        return names
+    for dll in sorted(Path(plugins).glob("*.dll")):
+        try:
+            names.add(rename.read_assembly_name(dll).lower())
+        except Exception:
+            continue
+    return names
+
+
+def _sole_custom_plugin_guid(plugins: Path) -> str:
+    """Plugins 里恰好只有一个「非常规名」托管插件时返回其 guid。
+
+    这是「模组自己的插件刚被改名落位」的判定：此时 pack 里记的还是旧内部名
+    `CodeAssembly`，但工程里唯一那份 mod 插件就是它 —— 指过去是安全的。
+    有多个候选时返回空串（宁可留 unresolved 交给闸门，也不乱指一个）。
+    """
+    plugins = Path(plugins)
+    if not plugins.is_dir():
+        return ""
+    try:
+        import sfs_assembly_rename as rename
+    except ImportError:
+        return ""
+    candidates: list[str] = []
+    for dll in sorted(plugins.glob("*.dll")):
+        try:
+            name = rename.read_assembly_name(dll).lower()
+        except Exception:
+            continue
+        if name == "codeassembly":
+            continue
+        g = _guid_of_meta(dll.with_suffix(".dll.meta"))
+        if g:
+            candidates.append(g)
+    return candidates[0] if len(candidates) == 1 else ""
 
 
 def restore_custom_scripts(
@@ -1573,8 +1701,16 @@ def align_scripts_to_toolkit(
     if plugins_dir.is_dir():
         for dll in sorted(plugins_dir.glob("*.dll")):
             g = _guid_of_meta(dll.with_suffix(".dll.meta"))
-            if g:
-                custom_guid_target[dll.name] = g
+            if not g:
+                continue
+            custom_guid_target[dll.name] = g
+            # 改名后的插件文件名与 pack 里记的 m_AssemblyName 不再一致，
+            # 但 pack 里的自定义类仍然要指到它 → 按**内部名**再登记一次。
+            try:
+                import sfs_assembly_rename as _rename
+                custom_guid_target.setdefault(_rename.read_assembly_name(dll), g)
+            except Exception:
+                pass
     custom_targets = 0
     for g, rec in pack_hits.items():
         cls = rec["class"]
@@ -1584,6 +1720,10 @@ def align_scripts_to_toolkit(
         if not asm or _is_stock_assembly(asm):
             continue
         dll_guid = custom_guid_target.get(asm) or custom_guid_target.get(asm + ".dll")
+        if not dll_guid:
+            # pack 里记的是 CodeAssembly（原内部名），而落位时已改成唯一名。
+            # 此时工程 Plugins 下只有本模组这一个非常规名插件 → 安全地指过去。
+            dll_guid = _sole_custom_plugin_guid(plugins_dir)
         if dll_guid and dll_guid != g:
             stub_to_toolkit_pre[g] = dll_guid
             custom_targets += 1
@@ -1635,8 +1775,8 @@ def align_scripts_to_toolkit(
         if collect_unresolved(new_text, guid_to_class, stub_to_toolkit, known_guids):
             unresolved_prefab_names.append(str(f.relative_to(project_dir)))
         # 终极自检：重写之后还指向工程里不存在的 GUID 的就是真挂空
-        for mm in SCRIPT_REF_RE.finditer(new_text):
-            g = mm.group(2).lower()
+        for g_raw, _fid, _typ in _iter_script_refs(new_text):
+            g = g_raw.lower()
             if g in known_guids:
                 continue
             rec = unresolved_guids.setdefault(
@@ -1949,18 +2089,22 @@ def _mod_owner_of_guid(assets: Path, guid: str) -> str:
 def detect_assembly_conflicts(
     toolkit_root: Path, package_dir: Path, incoming_owner: str = "",
 ) -> list[dict]:
-    """预检：Toolkit 里已有**内容不同**的同名程序集 → 拒绝并入（方案 A / P0-1）。
+    """预检：Toolkit 里已有**内容不同且内部名相同**的程序集 → 拒绝并入（P0-1）。
 
-    dll 文件名天生不唯一：方案 B 把每个模组的 dll 都落成 `Plugins/CodeAssembly.dll`，
-    且不能改名（MonoScript 的 m_AssemblyName 就是它）。而安装层的「GUID 过期占位」
-    例外判据（同名 + GUID 不同 + 新 GUID 被引用）对 dll 恰好全成立，于是后装的模组
-    会静默覆盖先装的，先装模组的部件脚本全部 missing script，日志却只有一行
-    "已替换 N 个同名残留"。
+    判据以**程序集内部名**为准，不是文件名：
+      - 内部名不同 = Unity 视为两个独立程序集，共存无冲突（改名方案就能通过）；
+      - 内部名相同且字节不同 = 真冲突（会静默顶掉先装的模组，先装者脚本全挂）；
+      - 内部名相同且字节相同 = 同一模组重复导入，放行（靠覆盖刷新 GUID）。
 
-    只在**字节不同**时判冲突：字节相同 = 同一模组重复导入（每次导出重新生成 GUID），
-    必须放行并靠覆盖刷新 GUID，否则重导自己反而挂空。读取失败不判冲突（宁可漏拦不误拦）。
+    历史：旧版把落点写死成 `Plugins/CodeAssembly.dll` 并声称"不能改名"，所以一份
+    Toolkit 只能装一个带自定义脚本的模组；安装层的「GUID 过期占位」例外判据
+    （同名 + GUID 不同 + 新 GUID 被引用）对 dll 恰好全成立 → 后装的静默覆盖先装的，
+    先装模组的部件脚本全部 missing script。现在改成改名共存，这道预检只兜真正
+    无法改名的情况（内部名过短、加密程序集等）。
 
-    返回 [{name, rel, existing_guid, incoming_guid, existing_owner,
+    拿不到内部名（非托管 dll / 解析失败）时退化为按文件名+字节比较，保持旧行为。
+
+    返回 [{name, rel, assembly, existing_guid, incoming_guid, existing_owner,
     incoming_owner, existing_path}]；空列表 = 可安全并入。
     """
     tk_assets = Path(toolkit_root) / "Assets"
@@ -1981,11 +2125,19 @@ def detect_assembly_conflicts(
             continue
         if same:
             continue  # 同一个模组重复导入，放行（要靠覆盖刷新 GUID）
+
+        # 内部名不同 → 两个独立程序集，Unity 能共存，不算冲突
+        src_asm = _safe_assembly_name(src)
+        dest_asm = _safe_assembly_name(dest)
+        if src_asm and dest_asm and src_asm.lower() != dest_asm.lower():
+            continue
+
         existing_guid = _meta_guid(Path(str(dest) + ".meta"))
         incoming_guid = _meta_guid(Path(str(src) + ".meta"))
         conflicts.append({
             "name": src.name,
             "rel": src.relative_to(pkg_assets).as_posix(),
+            "assembly": src_asm or dest_asm or "",
             "existing_guid": existing_guid,
             "incoming_guid": incoming_guid,
             "existing_owner": _mod_owner_of_guid(tk_assets, existing_guid),
@@ -1993,6 +2145,15 @@ def detect_assembly_conflicts(
             "existing_path": str(dest),
         })
     return conflicts
+
+
+def _safe_assembly_name(dll: Path) -> str:
+    """读 dll 内部名；失败返回空串（调用方据此退化为文件名比较）。"""
+    try:
+        import sfs_assembly_rename as rename
+        return rename.read_assembly_name(dll)
+    except Exception:
+        return ""
 
 
 def _solid_declared_types(cs_files) -> dict[str, list[Path]]:

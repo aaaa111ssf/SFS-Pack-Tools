@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo ==========================================================
-echo   SFS Pack Tool v2.3.3 - 打包脚本
+echo   SFS Pack Tool v2.3.5-PyQt - 打包脚本
 echo ==========================================================
 
 if "%1"=="-p" goto :prep_only
@@ -42,10 +42,10 @@ if errorlevel 1 ( echo   打包失败，请粘贴上方完整输出 & pause & exit /b 1 )
 echo.
 echo ==========================================================
 echo   打包完成，EXE 位置：
-echo   %cd%\dist\SFS_Pack_Tool_v2.3.3_Embedded_GPL.exe
+echo   %cd%\dist\SFS_Pack_Tool_v2.3.5-PyQt_Embedded_GPL.exe
 echo   下一步运行 sign.bat 进行签名
 echo ==========================================================
-if exist "dist\SFS_Pack_Tool_v2.3.3_Embedded_GPL.exe" dir /b dist\*.exe
+if exist "dist\SFS_Pack_Tool_v2.3.5-PyQt_Embedded_GPL.exe" dir /b dist\*.exe
 pause
 exit /b 0
 :prep_only

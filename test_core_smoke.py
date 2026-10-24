@@ -30,6 +30,23 @@ STUB_IN_MONOSCRIPT = "d" * 32
 MOD_DLL_GUID = "68295d573e80e1c18ab7ad250963a526"
 
 
+def patch_global(module, name, value) -> None:
+    """替换业务逻辑依赖的某个全局（弹窗 / UnityPy）。
+
+    v2.4.0 起业务逻辑挪到了 sfs_pack_tool_logic（Tk 与 Qt 两个界面共用），
+    调用点用的是**那个模块的**全局，所以两边都要替换，
+    否则断言拿到的是"没人调用过"的空列表、或者跑的还是真 UnityPy。
+    """
+    setattr(module, name, value)
+    import sfs_pack_tool_logic as _logic
+    if hasattr(_logic, name):
+        setattr(_logic, name, value)
+
+
+def patch_messagebox(module, fake) -> None:
+    patch_global(module, "messagebox", fake)
+
+
 class Result:
     def __init__(self) -> None:
         self.ok = True
@@ -411,7 +428,7 @@ def test_pack_info_and_strip_guards(tmp: Path, r: Result) -> None:
         def load(_payload):
             return _Env(objs)
 
-    module.UnityPy = _FakeUnityPy
+    patch_global(module, "UnityPy", _FakeUnityPy)
     count = module.count_bundle_parts(b"fake")
     r.check("部件数按 prefab 根统计=2（不被 MonoBehaviour 撑大）", count == 2)
 
@@ -531,7 +548,7 @@ def test_translation_key_filtering(tmp: Path, r: Result) -> None:
         def load(_payload):
             return _Env([_O(i, t) for i, t in enumerate(trees)])
 
-    module.UnityPy = _FakeUnityPy
+    patch_global(module, "UnityPy", _FakeUnityPy)
     translate = lambda key, **kw: key  # noqa: E731
     src = tmp / "kf.pack"
     write(src, json.dumps({"WindowsBuild": "AAAA"}))
@@ -567,7 +584,7 @@ def test_translation_key_filtering(tmp: Path, r: Result) -> None:
             self.objects = objs
             self.file = _FakeFile()
 
-    module.UnityPy = type("U", (), {"load": staticmethod(lambda _p: _Env2(env_objs))})
+    patch_global(module, "UnityPy", type("U", (), {"load": staticmethod(lambda _p: _Env2(env_objs))}))
     module.write_translation(str(src), str(tr), "", translate, logs2.append)
     for o in env_objs:
         if o.saved is not None:
@@ -734,7 +751,7 @@ def test_install_refuses_assembly_conflict(tmp: Path, r: Result) -> None:
         def showwarning(title, body, **kw):
             shown.append((title, body))
 
-    module.messagebox = _FakeMB
+    patch_messagebox(module, _FakeMB)
 
     toolkit = make_toolkit(tmp / "ToolkitAsm")
     package = tmp / "PkgAsm"
@@ -910,7 +927,7 @@ def test_install_refuses_source_type_clash(tmp: Path, r: Result) -> None:
         def showwarning(title, body, **kw):
             shown.append((title, body))
 
-    module.messagebox = _FakeMB
+    patch_messagebox(module, _FakeMB)
 
     def cs_file(path: Path, ns: str, outer: str, inner: str) -> None:
         """按 ILSpy 反编译产物的排版写 .cs（类型必须各占一行，declared_types 逐行匹配）。"""
@@ -1047,7 +1064,7 @@ def test_scan_reports_unreliable_custom_classes(tmp: Path, r: Result) -> None:
         def showinfo(title, body, **kw):
             shown.append((title, body))
 
-    module.messagebox = _FakeMB
+    patch_messagebox(module, _FakeMB)
     logs: list[str] = []
     module.App._after_scan_notices(_Shell(), rep, logs.append)
     r.check("日志留了一行醒目提示", any("scan_unreliable_log" in x for x in logs))
