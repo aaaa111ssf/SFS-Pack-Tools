@@ -8,6 +8,70 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt — 2026-10-26
+
+### 中文
+
+本版补齐 **SFS 1.7（Propulsion-Rebase）** 支持，并修掉导入 1.6 mod 时两个会导致
+"部件 Missing Script / 燃料不互通"的真问题。
+
+#### 新增
+
+| 能力 | 说明 |
+| --- | --- |
+| **1.7 引擎自动修复（实验）** | 设置 → 高级 → 「实验：1.7 引擎自动修复」。导出管线 **1.86 步**为旧 mod 的引擎/助推器补齐 1.7 新增的 `[Required]` 字段：`EngineModule` 补 `heatHitbox` / `isVacuum` / `multipleNozzles` / `heatHitboxes[]`；`BoosterModule` 补 `heatHitbox` / `setDensity` / `boosterOn` |
+| **安全边界** | 仅当目标 Toolkit 真的是 1.7（`EngineModule.cs` 含 `heatHitbox`）才执行，否则 `skip=not_17_toolkit`；**幂等**（已有有效 heatHitbox 跳过）；改前备份到 `<导出>/_ENGINE17_BACKUP` |
+| **`heatHitbox` 解析** | 引擎 = heatHolder 的第一个子物体；助推器 = heatHolder **自身**（与 1.7 `BoosterModule.Start` 的兜底 `heatHitbox = heatHolder` 一致，实测 1.7 `BoosterBase.prefab` 的 holder 本身就叫 "Heat Hitbox"） |
+| **目标框架探测** | `detect_target_framework()` 读程序集的 `TargetFrameworkAttribute`，写入 `scan_pack()['code_assembly']['target_framework']` 供参考 |
+
+#### 修复
+
+| 问题 | 根因与改法 |
+| --- | --- |
+| **导入后部件 Missing Script** | Unity 把 `Assets` 内所有 `.dll` 当托管插件；`Assets/ModBuilder/xxx_CodeAssembly.dll` 与 `Assets/Plugins/<程序集>.dll` 同名 → 「同名程序集」冲突，Unity 卸载其一。改为把 CodeAssembly 写到 `<Toolkit>/_PackToolCodeAssembly/`（**Assets 之外**），并自动迁移旧版遗留在 `Assets/ModBuilder` 的副本（仅与 Plugins 字节完全相同才移动，否则只告警） |
+| **1.6 燃料不挂到原版（`<模组名>_Liquid_Fuel`）** | `_norm_asset_text` 原先只忽略 `plainText: 0`；1.6 包导出燃料带 `plainText: 1`，与 1.5 时代无此字段的原版不等价 → 被判成"改过的燃料"保留私有副本。改为忽略**任意取值**的 `plainText:` 行（只影响显示译法，不改变资源身份） |
+
+#### 验证
+
+| 项目 | 结果 |
+| --- | --- |
+| `test_core_smoke.py` | 全量 ALL PASS |
+| 1.7 修复用例（2h） | 正例 / 幂等 / 非 1.7 跳过 / 助推器指向自身 —— 全过 |
+| 真实 1.6 `Engine Frontier` | 迁移后 `heatHitbox` 与 1.7 原版完全一致 |
+
+---
+
+### English
+
+This release adds **SFS 1.7 (Propulsion-Rebase)** support and fixes two real problems that
+caused missing scripts and non-interoperable fuel when importing 1.6 mods.
+
+#### Added
+
+| Capability | Detail |
+| --- | --- |
+| **1.7 engine auto-repair (experimental)** | Settings → Advanced → "1.7 engine auto-repair". Export step **1.86** backfills the `[Required]` fields 1.7 introduced: `EngineModule` gets `heatHitbox` / `isVacuum` / `multipleNozzles` / `heatHitboxes[]`; `BoosterModule` gets `heatHitbox` / `setDensity` / `boosterOn` |
+| **Safety guard** | Runs only when the Toolkit really is 1.7 (`EngineModule.cs` contains `heatHitbox`), otherwise `skip=not_17_toolkit`; **idempotent**; backs up to `<export>/_ENGINE17_BACKUP` |
+| **`heatHitbox` resolution** | Engine = heatHolder's first child; booster = heatHolder **itself** (matching 1.7 `BoosterModule.Start`'s `heatHitbox = heatHolder`) |
+| **Target framework probe** | `detect_target_framework()` records the assembly's `TargetFrameworkAttribute` into `scan_pack()['code_assembly']['target_framework']` for reference |
+
+#### Fixed
+
+| Problem | Root cause and fix |
+| --- | --- |
+| **Missing Script after import** | Unity imports every `.dll` under `Assets` as a managed plugin; a duplicate of the same assembly in `Assets/ModBuilder` and `Assets/Plugins` triggers a same-name conflict and one copy is unloaded. CodeAssembly is now written to `<Toolkit>/_PackToolCodeAssembly/` (**outside Assets**), and stale copies under `Assets/ModBuilder` are relocated when byte-identical |
+| **1.6 fuel not redirected to stock** | `_norm_asset_text` only ignored `plainText: 0`; 1.6 packs export `plainText: 1`. Now any `plainText:` value is ignored — display-only, does not change asset identity |
+
+#### Verification
+
+| Item | Result |
+| --- | --- |
+| `test_core_smoke.py` | ALL PASS |
+| 1.7 repair cases (2h) | positive / idempotent / non-1.7 skip / booster self — all pass |
+| Real 1.6 `Engine Frontier` | `heatHitbox` after migration matches 1.7 exactly |
+
+---
+
 ## v2.3.5-PyQt — 2026-10-23
 
 ### 中文

@@ -924,6 +924,29 @@ def assembly_refs_from_bytes(blob: bytes) -> list[str]:
     return sorted(hits)
 
 
+_TFM_RE = re.compile(r"\.NET(?:Framework|Standard|CoreApp),Version=v[\d.]+")
+
+
+def detect_target_framework(blob: bytes) -> str:
+    """从程序集的 TargetFrameworkAttribute 读出目标框架，如 `.NETFramework,Version=v4.8`。
+
+    为什么重要：Unity 的 Api Compatibility Level 决定能加载哪些目标框架的程序集。
+    Unity 6 默认 .NET Standard 2.1，**.NET Framework 4.x 的 dll 会被 Unity 当作
+    broken assembly 整体卸载**（日志 `Unloading broken assembly ...`），其组件全部变成
+    Missing Script——但方案 B 只把 dll 落位、并不会替用户发现这一点。读不到返回空串。
+    """
+    for s in _iter_printable_strings(blob):
+        m = _TFM_RE.search(s)
+        if m:
+            return m.group(0)
+    return ""
+
+
+def target_framework_is_dotnet_framework(tfm: str) -> bool:
+    """目标框架是否为 .NET Framework（这类 dll 在 .NET Standard 工程里会被 Unity 卸载）。"""
+    return tfm.lower().startswith(".netframework")
+
+
 def toolkit_script_classes(toolkit_root) -> set[str]:
     """Toolkit 自带脚本里声明的类名集合，用来区分「mod 自定义类」与「SFS 原生类」。"""
     root = Path(toolkit_root)
@@ -1004,6 +1027,10 @@ def scan_pack(pack_path: Path, toolkit_root=None, log=None) -> dict:
             warnings.append("CodeAssembly 不是有效 PE(dll) 文件")
         else:
             result["assembly_refs"] = assembly_refs_from_bytes(blob)
+            # 仅记录目标框架供参考。它本身**不必然**导致 Unity 卸载：实测 .NET Framework
+            # 4.8 的 dll 在 .NET Standard 工程里也能正常加载。真正会让整份程序集被卸载的
+            # 是**同名程序集冲突**（见 generate_pack_data 里 Assets/ModBuilder 副本的问题）。
+            ca["target_framework"] = detect_target_framework(blob)
 
     # 3) 包内 MonoScript 类名里有哪些非 SFS 自带的自定义类
     try:
@@ -2575,7 +2602,12 @@ def _norm_asset_text(text: str, ignore_name: bool = False) -> str:
     "mod 改过"：
     - `m_EditorClassIdentifier:`：纯编辑器元数据，运行时类由 m_Script guid 决定
       （两份相同，已打码），空 vs 有值不影响任何行为；
-    - `plainText: 0`：TranslationVariable 的 C# 默认值，与缺省该字段完全等价；
+    - `plainText:`（**任意取值**）：TranslationVariable 的显示/翻译开关。Toolkit 里的
+      原版燃料是 SFS 1.5 时代导出的，那时还没有该字段；SFS 1.6 的包导出后会带
+      `plainText: 1`。若只忽略 `plainText: 0`，`1.6` 模组的 `Liquid_Fuel` 副本就会因
+      这一行被判成"改过的燃料"，改名成 `<模组名>_Liquid_Fuel.asset` 保留，部件继续
+      引用私有燃料（与官方油箱燃料不互通）。该字段只影响显示译法、不改变资源身份，
+      故等价判定一律抹平；
     - `TranslatableGroup:`：AssetRipper 导出常丢该字段（实测 RDEP
       `RDEP3.0.0_Engines` 缺 `TranslatableGroup: Pick List Names`，游戏里分类名
       查不到翻译）。抹平后副本重定向到 Toolkit 原版，显示反而被修正。
@@ -2596,7 +2628,7 @@ def _norm_asset_text(text: str, ignore_name: bool = False) -> str:
             continue
         if stripped.startswith("m_EditorClassIdentifier:"):
             continue
-        if stripped in ("plainText: 0", "plainText: 0\r"):
+        if stripped.startswith("plainText:"):
             continue
         if stripped.startswith("TranslatableGroup:"):
             continue
@@ -2921,6 +2953,70 @@ def _read_pack_metadata(pack_file: Path) -> dict | None:
     return None
 
 
+def _relocate_duplicate_code_assemblies(assets: Path, log=None) -> list[str]:
+    """把 `Assets/ModBuilder` 下与 `Plugins` 同名程序集的 CodeAssembly 副本移出 Assets。
+
+    Unity 会把 Assets 内所有 .dll 当托管插件导入；同一个程序集内部名出现两次会被判
+    「同名程序集」冲突，Unity 卸载其中一个（日志 `Unloading broken assembly ...`），
+    该模组的自定义组件随即全部 Missing Script。旧版本把 CodeAssembly 副本写进了
+    `Assets/ModBuilder/`，正好与方案 B 落在 `Assets/Plugins/` 的那份撞名。
+
+    这里把这类副本挪到 Assets 之外的 `_PackToolCodeAssembly/`：文件留着（ModBuilder
+    弹窗仍可选），但 Unity 不再导入它。仅当两份字节完全相同（确认是同一份）时才移动，
+    内容不同则只告警不动，避免误伤不同版本的 dll。
+    """
+    assets = Path(assets)
+    modbuilder = assets / "ModBuilder"
+    if not modbuilder.is_dir():
+        return []
+    try:
+        import sfs_assembly_rename as rn
+    except ImportError:
+        return []
+    plugins = assets / "Plugins"
+    plugin_by_asm: dict[str, Path] = {}
+    if plugins.is_dir():
+        for d in plugins.rglob("*.dll"):
+            try:
+                plugin_by_asm.setdefault(rn.read_assembly_name(d).lower(), d)
+            except Exception:
+                continue
+    out_dir = assets.parent / "_PackToolCodeAssembly"
+    moved: list[str] = []
+    for dll in sorted(modbuilder.glob("*_CodeAssembly.dll")):
+        try:
+            asm = rn.read_assembly_name(dll).lower()
+        except Exception:
+            continue
+        target = plugin_by_asm.get(asm)
+        if target is None:
+            continue
+        try:
+            same = target.read_bytes() == dll.read_bytes()
+        except OSError:
+            same = False
+        if not same:
+            if log:
+                log(f"[自定义] [!] {dll.name} 与 Plugins/{target.name} 同名但内容不同，未移动，请手动核对")
+            continue
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            dest = out_dir / dll.name
+            if dest.exists():
+                dest.unlink()
+            dll.replace(dest)
+            meta = dll.with_name(dll.name + ".meta")
+            if meta.is_file():
+                meta.unlink()
+        except OSError:
+            continue
+        moved.append(str(dest))
+        if log:
+            log(f"[自定义] [!] 已把 {dll.name} 从 Assets/ModBuilder 移到 {dest}："
+                "Assets 内同名程序集会被 Unity 判冲突并卸载其一，导致部件 Missing Script")
+    return moved
+
+
 def generate_pack_data(
     toolkit_root: Path,
     pack_file: Path,
@@ -3092,17 +3188,26 @@ def generate_pack_data(
         log("[PackData] 已给 {n} 个资产的 .meta 设置 AssetBundle 标签 {label} (改动已备份到 {backup})".format(
             n=labeled, label=mod_name, backup=str(backup_root) if backup else "(已禁用)"))
 
-    # 6) CodeAssembly：原包带自定义脚本时导出 dll 供 ModBuilder 弹窗选择
+    # 6) CodeAssembly：原包带自定义脚本时导出一份 dll 供 ModBuilder 弹窗选择。
+    #    关键：必须放在 Assets **之外**。Assets 内所有 .dll 都会被 Unity 当托管插件导入；
+    #    方案 B 已把同一程序集落在 Assets/Plugins/<程序集名>.dll，再往 Assets/ModBuilder
+    #    放一份同名副本 → Unity 判「同名程序集」冲突并卸载其一（日志 Unloading broken
+    #    assembly ...），该模组全部自定义组件立刻变成 Missing Script。
     try:
         data = json.loads(Path(pack_file).read_text(encoding="utf-8-sig"))
         ca = data.get("CodeAssembly")
         if isinstance(ca, str) and ca.strip():
-            dll = assets / "ModBuilder" / (mod_name + "_CodeAssembly.dll")
+            out_dir = Path(assets).parent / "_PackToolCodeAssembly"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            dll = out_dir / (mod_name + "_CodeAssembly.dll")
             dll.write_bytes(base64.b64decode(ca))
             rep["dll"] = str(dll)
-            log("[PackData] 原包带自定义脚本 已导出 {path} (构建弹窗时选择它)".format(path=str(dll)))
+            log("[PackData] 原包带自定义脚本 已导出 {path}（放在 Assets 之外，不会被 Unity 当插件导入）"
+                .format(path=str(dll)))
     except Exception:
         pass
+    # 6b) 清理旧版本遗留在 Assets/ModBuilder 下的 CodeAssembly 副本（同名程序集冲突根源）
+    _relocate_duplicate_code_assemblies(assets, log)
 
     rep["ok"] = True
     return rep
@@ -3225,6 +3330,217 @@ def dedupe_export_assets(assets_dir: Path, log=None, backup_dir: Path | None = N
         n=rep["removed"], refs=rep["redirected_refs"], g=rep["groups"]))
     if rep["kept_diff"]:
         log("[去重] [!] {} 个同名不同内容的资产已保留 (真变体)".format(len(rep["kept_diff"])))
+    return rep
+
+
+# ---- 1.7（Propulsion-Rebase）引擎自动修复 [实验] ---------------------------
+
+def _toolkit_engine_is_17(toolkit_root) -> bool:
+    """Toolkit 是否 1.7 推进重构版：EngineModule.cs 里出现 `heatHitbox` 字段。"""
+    assets = Path(toolkit_root) / "Assets"
+    if not assets.is_dir():
+        return False
+    for cs in assets.rglob("EngineModule.cs"):
+        try:
+            if "heatHitbox" in cs.read_text(encoding="utf-8", errors="ignore"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _toolkit_engine_guids(toolkit_root) -> dict[str, str]:
+    """从 Toolkit 读 EngineModule / BoosterModule 的脚本 GUID（识别 mod prefab 里的组件）。"""
+    assets = Path(toolkit_root) / "Assets"
+    out: dict[str, str] = {}
+    for name in ("EngineModule", "BoosterModule"):
+        for cs in assets.rglob(name + ".cs"):
+            g = _meta_guid(cs.with_name(cs.name + ".meta"))
+            if g:
+                out[name] = g
+                break
+    return out
+
+
+def _split_prefab_docs(text: str):
+    """把 prefab 文本拆成 [(classId, anchor, 含头部的整块文本), ...]。"""
+    matches = list(re.finditer(r"(?m)^--- !u!(\d+) &(-?\d+)", text))
+    if not matches:
+        return text, []
+    prefix = text[:matches[0].start()]
+    docs = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        docs.append([m.group(1), m.group(2), text[m.start():end]])
+    return prefix, docs
+
+
+def _go_hierarchy(docs):
+    """返回 (GameObject→Transform, Transform→GameObject, Transform→children)。"""
+    go_to_tr: dict[str, str] = {}
+    tr_to_go: dict[str, str] = {}
+    tr_children: dict[str, list[str]] = {}
+    for cls, anc, body in docs:
+        if cls != "4":
+            continue
+        m = re.search(r"(?m)^\s*m_GameObject:\s*\{fileID:\s*(-?\d+)\}", body)
+        if m:
+            tr_to_go[anc] = m.group(1)
+            go_to_tr.setdefault(m.group(1), anc)
+        mc = re.search(r"(?ms)^\s*m_Children:\s*\n((?:\s*-\s*\{fileID:\s*-?\d+\}\s*\n?)*)", body)
+        tr_children[anc] = re.findall(r"-\s*\{fileID:\s*(-?\d+)\}", mc.group(1)) if mc else []
+    return go_to_tr, tr_to_go, tr_children
+
+
+def _resolve_hitbox17(holder_go: str, go_to_tr, tr_to_go, tr_children,
+                      for_booster: bool = False) -> str:
+    """heatHolder GameObject → heatHitbox GameObject。
+
+    - EngineModule：与 1.7 `Update` 的运行时兜底
+      `heatHitbox = heatHolder.transform.GetChild(0)` 一致——取第一个子物体，
+      无子物体则退回 heatHolder 自身（比留 null 安全，且同样满足 [Required]）。
+    - BoosterModule：与 1.7 `Start` 的兜底 `heatHitbox = heatHolder` 一致——
+      **始终取 heatHolder 自身**。实测 1.7 `engines_1.7/base/BoosterBase.prefab`
+      的 heatHolder 本身就命名为 "Heat Hitbox"、没有子物体，用"第一个子物体"
+      的规则会把助推器指到错误对象。
+    """
+    if not holder_go or holder_go == "0":
+        return ""
+    if for_booster:
+        return holder_go
+    tr = go_to_tr.get(holder_go)
+    if tr:
+        kids = tr_children.get(tr) or []
+        if kids:
+            child_go = tr_to_go.get(kids[0])
+            if child_go:
+                return child_go
+    return holder_go
+
+
+def _append_component_fields(body: str, fields: list[str]) -> str:
+    """把若干行字段追加到 MonoBehaviour 块末尾（YAML 字段顺序无关）。"""
+    return body.rstrip() + "\n" + "".join("  " + f + "\n" for f in fields)
+
+
+def repair_engine_modules_for_17(assets_dir: Path, toolkit_root: Path | None = None,
+                                 log=None, backup_dir: Path | None = None) -> dict[str, object]:
+    """[实验] 为 1.7（Propulsion-Rebase）补齐旧 mod 引擎组件的缺失字段。
+
+    1.7 把引擎抽成 ThrustBase，并在 EngineModule / BoosterModule 上新增
+    `heatHitbox`（[Required]）、`multipleNozzles`、`isVacuum`、`heatHitboxes[]`、
+    `boosterOn`、`setDensity` 等。1.6 导出的 prefab 没有这些字段 → 导入 1.7 后
+    编辑器报 [Required] Missing，运行时 heatHitbox 为 null 还可能 NRE。
+
+    就地补字段（不动其它内容），可重复执行（已有有效 heatHitbox 的组件跳过）：
+      EngineModule : isVacuum=0, multipleNozzles=0, heatHitboxes=[], heatHitbox=<resolved>
+      BoosterModule: setDensity=1, heatHitbox=<resolved>, boosterOn（克隆变量引用）
+      RcsModule    : 1.6/1.7 序列化字段一致，不处理
+    heatHitbox 解析：heatHolder 的第一个子物体；无子则 heatHolder 自身。
+
+    安全边界：`toolkit_root` 不是 1.7（EngineModule.cs 无 heatHitbox）时**直接跳过**，
+    避免误给 1.6 工程加它不认识的字段。
+    """
+    if log is None:
+        log = print
+    rep: dict[str, object] = {"repaired": 0, "engine": 0, "booster": 0,
+                              "skipped": 0, "files": 0, "error": "", "skip": ""}
+    assets_dir = Path(assets_dir)
+    if not assets_dir.is_dir():
+        rep["error"] = "no_assets_dir"
+        return rep
+    if toolkit_root is None or not _toolkit_engine_is_17(toolkit_root):
+        rep["skip"] = "not_17_toolkit"
+        log("[1.7修复] 跳过：目标 Toolkit 不是 1.7 推进重构版（EngineModule 无 heatHitbox）")
+        return rep
+    guids = _toolkit_engine_guids(toolkit_root)
+    engine_g = guids.get("EngineModule", "").lower()
+    booster_g = guids.get("BoosterModule", "").lower()
+    if not engine_g:
+        rep["error"] = "no_engine_guid"
+        log("[1.7修复] [!] 找不到 EngineModule 脚本 GUID，未处理")
+        return rep
+
+    for pf in sorted(assets_dir.rglob("*.prefab")):
+        try:
+            text = pf.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        low = text.lower()
+        if engine_g not in low and (not booster_g or booster_g not in low):
+            continue
+        prefix, docs = _split_prefab_docs(text)
+        if not docs:
+            continue
+        go_to_tr, tr_to_go, tr_children = _go_hierarchy(docs)
+        changed = False
+        for doc in docs:
+            cls, _anc, body = doc
+            if cls != "114":
+                continue
+            ms = re.search(r"m_Script:\s*\{fileID:\s*-?\d+,\s*guid:\s*([0-9a-fA-F]{32})", body)
+            if not ms:
+                continue
+            g = ms.group(1).lower()
+            is_engine = g == engine_g
+            is_booster = bool(booster_g) and g == booster_g
+            if not (is_engine or is_booster):
+                continue
+            hb = re.search(r"(?m)^\s*heatHitbox:\s*\{fileID:\s*(-?\d+)\}", body)
+            if hb and hb.group(1) != "0":
+                rep["skipped"] += 1
+                continue
+            holder = re.search(r"(?m)^\s*heatHolder:\s*\{fileID:\s*(-?\d+)\}", body)
+            hitbox_go = _resolve_hitbox17(holder.group(1) if holder else "",
+                                          go_to_tr, tr_to_go, tr_children,
+                                          for_booster=is_booster)
+            if not hitbox_go:
+                rep["skipped"] += 1
+                log(f"[1.7修复] [!] {pf.name}: heatHolder 缺失，跳过该组件")
+                continue
+            if is_engine:
+                doc[2] = _append_component_fields(body, [
+                    f"heatHitbox: {{fileID: {hitbox_go}}}",
+                    "isVacuum: 0", "multipleNozzles: 0", "heatHitboxes: []",
+                ])
+                rep["engine"] += 1
+            else:
+                vars_m = re.search(r"referenceToVariables:\s*\{fileID:\s*(-?\d+)\}", body)
+                fields = [f"heatHitbox: {{fileID: {hitbox_go}}}", "setDensity: 1"]
+                if vars_m:
+                    fields += ["boosterOn:", "  variableName: booster_on",
+                               f"  referenceToVariables: {{fileID: {vars_m.group(1)}}}",
+                               "  localValue: 0"]
+                else:
+                    log(f"[1.7修复] [!] {pf.name}: BoosterModule 找不到变量对象，未补 boosterOn")
+                doc[2] = _append_component_fields(body, fields)
+                rep["booster"] += 1
+            rep["repaired"] += 1
+            changed = True
+        if not changed:
+            continue
+        if backup_dir is not None:
+            try:
+                dst = Path(backup_dir) / pf.relative_to(assets_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if not dst.is_file():
+                    dst.write_bytes(pf.read_bytes())
+            except OSError:
+                pass
+        out = prefix + "".join(d[2].rstrip("\n") + "\n" for d in docs)
+        try:
+            pf.write_text(out, encoding="utf-8")
+            rep["files"] += 1
+        except OSError:
+            continue
+
+    if rep["repaired"]:
+        log("[1.7修复] 已为 {n} 个引擎组件补齐 1.7 字段（Engine {e} / Booster {b}，"
+            "改动 {f} 个 prefab，已迁移跳过 {s}）".format(
+                n=rep["repaired"], e=rep["engine"], b=rep["booster"],
+                f=rep["files"], s=rep["skipped"]))
+    else:
+        log("[1.7修复] 未发现需要补齐的 1.7 引擎组件")
     return rep
 
 

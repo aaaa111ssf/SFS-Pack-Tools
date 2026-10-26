@@ -1402,6 +1402,7 @@ def test_resource_dup_redirect(tmp: Path, r: Result) -> None:
     DIFF = "4" * 32
     DIFFERENT = "5" * 32
     ENGINE = "6" * 32
+    COPY1 = "9" * 32
 
     tk = tmp / "tk"
     pkg = tmp / "pkg"
@@ -1444,6 +1445,12 @@ def test_resource_dup_redirect(tmp: Path, r: Result) -> None:
     write(pkg / "Fu" / "Liquid_Fuel_0.asset",
           fuel("Liquid_Fuel", "", "    plainText: 0\n"))
     write(pkg / "Fu" / "Liquid_Fuel_0.asset.meta", meta(COPY0))
+    # 包内：1.6 模组导出的同名燃料，带 plainText: 1（真实案例 SFS1.6 engine mod）
+    # 原版是 1.5 时代导出、无该字段；只忽略 plainText:0 会把它误判成"改过的燃料"，
+    # 改名成 <模组名>_Liquid_Fuel.asset 保留 —— 这里断言它必须重定向到原版。
+    write(pkg / "Fu" / "Liquid_Fuel.asset",
+          fuel("Liquid_Fuel", "", "    plainText: 1\n"))
+    write(pkg / "Fu" / "Liquid_Fuel.asset.meta", meta(COPY1))
     # 包内：真改过的燃料（负面对照：resourceMass 不同，应保留并改名）
     write(pkg / "Fu" / "Solid_Fuel.asset",
           fuel("Solid_Fuel", "", "    plainText: 0\n", mass="9"))
@@ -1451,6 +1458,7 @@ def test_resource_dup_redirect(tmp: Path, r: Result) -> None:
     # 引用副本的 prefab
     prefab = ("  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % COPY
               + "  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % COPY0
+              + "  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % COPY1
               + "  resourceType: {fileID: 11400000, guid: %s, type: 2}\n" % DIFF)
     write(pkg / "Fu" / "Engine.prefab", prefab)
     write(pkg / "Fu" / "Engine.prefab.meta", meta(ENGINE))
@@ -1464,15 +1472,16 @@ def test_resource_dup_redirect(tmp: Path, r: Result) -> None:
 
     logs: list[str] = []
     rep = ka.remap_toolkit_duplicates(pkg, tk, log=logs.append, rename_tag="Mod")
-    r.check("前缀副本被识别为副本（渐进剥前缀）", rep["redirected"] == 2)
+    r.check("前缀副本被识别为副本（渐进剥前缀）", rep["redirected"] == 3)
     r.check("真改过的燃料被保留", any("Solid_Fuel" in x for x in rep["kept_diff"]))
     r.check("副本文件已删除", not (pkg / "Fu" / "AuthorName_Liquid_Fuel.asset").is_file()
-            and not (pkg / "Fu" / "Liquid_Fuel_0.asset").is_file())
-    r.check("引用改指 Toolkit 原版", rep["refs"] == 2)
+            and not (pkg / "Fu" / "Liquid_Fuel_0.asset").is_file()
+            and not (pkg / "Fu" / "Liquid_Fuel.asset").is_file())
+    r.check("引用改指 Toolkit 原版", rep["refs"] == 3)
     body = (pkg / "Fu" / "Engine.prefab").read_text(encoding="utf-8")
     r.check("prefab 里 resourceType 指向原版 guid",
-            body.count("guid: " + STOCK) == 2 and "guid: " + COPY not in body
-            and "guid: " + COPY0 not in body)
+            body.count("guid: " + STOCK) == 3 and "guid: " + COPY not in body
+            and "guid: " + COPY0 not in body and "guid: " + COPY1 not in body)
     r.check("保留的 mod 版已加前缀改名", (pkg / "Fu" / "Mod_Solid_Fuel.asset").is_file())
     r.check("负面对照引用未动", "guid: " + DIFF in body)
     r.check("内容不同的变体 prefab 不被模糊重定向（保留并改名）",
@@ -1594,6 +1603,92 @@ def test_single_platform_decode(tmp: Path, r: Result) -> None:
     r.check("首选平台缺失时顺延到可用平台", len(bundles) == 1 and bundles[0].name == "IOS_Build.bundle")
 
 
+def test_repair_engine_17(tmp: Path, r: Result) -> None:
+    print("\n=== 2h. 1.7 引擎自动修复：补 heatHitbox / isVacuum / boosterOn 等 ===")
+    import sfs_pack_core as ka
+
+    ENG = "e" * 32
+    BST = "b" * 32
+    tk = tmp / "tk17"
+    write(tk / "Assets/Scripts/Parts/Physics/EngineModule.cs",
+          "namespace SFS.Parts.Modules { public partial class EngineModule : ThrustBase "
+          "{ public GameObject heatHitbox; } }\n")
+    write(tk / "Assets/Scripts/Parts/Physics/EngineModule.cs.meta",
+          f"fileFormatVersion: 2\nguid: {ENG}\n")
+    write(tk / "Assets/Scripts/Parts/Physics/BoosterModule.cs",
+          "namespace SFS.Parts.Modules { public class BoosterModule "
+          "{ public GameObject heatHitbox; } }\n")
+    write(tk / "Assets/Scripts/Parts/Physics/BoosterModule.cs.meta",
+          f"fileFormatVersion: 2\nguid: {BST}\n")
+
+    prefab = (
+        "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n"
+        "--- !u!1 &100\nGameObject:\n  m_Component:\n  - component: {fileID: 400}\n  m_Name: Root\n"
+        "--- !u!4 &400\nTransform:\n  m_GameObject: {fileID: 100}\n  m_Children:\n"
+        "  - {fileID: 401}\n  m_Father: {fileID: 0}\n"
+        "--- !u!1 &101\nGameObject:\n  m_Component:\n  - component: {fileID: 401}\n  m_Name: Heat Holder\n"
+        "--- !u!4 &401\nTransform:\n  m_GameObject: {fileID: 101}\n  m_Children:\n"
+        "  - {fileID: 402}\n  m_Father: {fileID: 400}\n"
+        "--- !u!1 &102\nGameObject:\n  m_Component:\n  - component: {fileID: 402}\n  m_Name: Heat Hitbox\n"
+        "--- !u!4 &402\nTransform:\n  m_GameObject: {fileID: 102}\n  m_Children: []\n  m_Father: {fileID: 401}\n"
+        "--- !u!114 &500\nMonoBehaviour:\n  m_GameObject: {fileID: 101}\n"
+        f"  m_Script: {{fileID: 11500000, guid: {ENG}, type: 3}}\n"
+        "  throttle_Out:\n    variableName: throttle\n    referenceToVariables: {fileID: 900}\n"
+        "    localValue: 0\n  heatHolder: {fileID: 101}\n  oldMass: 6\n"
+    )
+    assets = tmp / "mod17" / "assets"
+    write(assets / "Engine.prefab", prefab)
+
+    rep = ka.repair_engine_modules_for_17(assets, tk, log=lambda *_: None)
+    r.check("1.7 引擎组件被补齐", rep["engine"] == 1 and rep["files"] == 1)
+    body = (assets / "Engine.prefab").read_text(encoding="utf-8")
+    r.check("heatHitbox 指向 heatHolder 的第一个子物体", "heatHitbox: {fileID: 102}" in body)
+    r.check("补齐 isVacuum / multipleNozzles / heatHitboxes",
+            "isVacuum: 0" in body and "multipleNozzles: 0" in body and "heatHitboxes: []" in body)
+    r.check("其它字段未被破坏", "heatHolder: {fileID: 101}" in body and "oldMass: 6" in body)
+
+    rep2 = ka.repair_engine_modules_for_17(assets, tk, log=lambda *_: None)
+    r.check("幂等：第二次不重复补", rep2["repaired"] == 0 and rep2["skipped"] == 1)
+
+    # 负面对照：1.6 Toolkit（无 heatHitbox）必须跳过，不乱加字段
+    tk16 = tmp / "tk16"
+    write(tk16 / "Assets/Scripts/Parts/Physics/EngineModule.cs",
+          "namespace SFS.Parts.Modules { public class EngineModule : MonoBehaviour {} }\n")
+    write(tk16 / "Assets/Scripts/Parts/Physics/EngineModule.cs.meta",
+          f"fileFormatVersion: 2\nguid: {ENG}\n")
+    rep3 = ka.repair_engine_modules_for_17(assets, tk16, log=lambda *_: None)
+    r.check("非 1.7 Toolkit 跳过", rep3.get("skip") == "not_17_toolkit")
+
+    # 助推器规则与引擎不同：1.7 BoosterModule 的兜底是 heatHitbox = heatHolder 自身
+    # （实测 BoosterBase.prefab：holder 就叫 "Heat Hitbox"、无子物体），
+    # 即使 holder 有子物体也不能取子物体。
+    bprefab = (
+        "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n"
+        "--- !u!1 &200\nGameObject:\n  m_Component:\n  - component: {fileID: 500}\n  m_Name: Root\n"
+        "--- !u!4 &500\nTransform:\n  m_GameObject: {fileID: 200}\n  m_Children:\n"
+        "  - {fileID: 501}\n  m_Father: {fileID: 0}\n"
+        "--- !u!1 &201\nGameObject:\n  m_Component:\n  - component: {fileID: 501}\n  m_Name: Heat Holder\n"
+        "--- !u!4 &501\nTransform:\n  m_GameObject: {fileID: 201}\n  m_Children:\n"
+        "  - {fileID: 502}\n  m_Father: {fileID: 500}\n"
+        "--- !u!1 &202\nGameObject:\n  m_Component:\n  - component: {fileID: 502}\n  m_Name: Heat Hitbox\n"
+        "--- !u!4 &502\nTransform:\n  m_GameObject: {fileID: 202}\n  m_Children: []\n  m_Father: {fileID: 501}\n"
+        "--- !u!114 &600\nMonoBehaviour:\n  m_GameObject: {fileID: 201}\n"
+        f"  m_Script: {{fileID: 11500000, guid: {BST}, type: 3}}\n"
+        "  heatHolder: {fileID: 201}\n"
+        "  throttle_Out:\n    referenceToVariables: {fileID: 901}\n    localValue: 0\n"
+    )
+    bassets = tmp / "mod17b" / "assets"
+    write(bassets / "Booster.prefab", bprefab)
+    repb = ka.repair_engine_modules_for_17(bassets, tk, log=lambda *_: None)
+    r.check("1.7 助推器组件被补齐", repb["booster"] == 1 and repb["files"] == 1)
+    bbody = (bassets / "Booster.prefab").read_text(encoding="utf-8")
+    r.check("助推器 heatHitbox 指向 heatHolder 自身（不是子物体）",
+            "heatHitbox: {fileID: 201}" in bbody and "heatHitbox: {fileID: 202}" not in bbody)
+    r.check("助推器补齐 setDensity / boosterOn",
+            "setDensity: 1" in bbody and "boosterOn:" in bbody
+            and "variableName: booster_on" in bbody)
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -1613,6 +1708,7 @@ def main() -> int:
         test_resource_dup_redirect(tmp, r)
         test_generate_pack_data(tmp, r)
         test_export_dedupe(tmp, r)
+        test_repair_engine_17(tmp, r)
         test_single_platform_decode(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)

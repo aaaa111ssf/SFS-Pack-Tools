@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller 打包脚本：SFS Pack Tool v2.3.5-PyQt（内置 AssetRipper 1.1.4）
+# PyInstaller 打包脚本：SFS Pack Tool v2.3.6-PyQt（内置 AssetRipper 1.1.4）
 # 相对路径均相对于本 spec 所在目录。
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
@@ -55,7 +55,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="SFS_Pack_Tool_v2.3.5-PyQt_Embedded_GPL",
+    name="SFS_Pack_Tool_v2.3.6-PyQt_Embedded_GPL",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

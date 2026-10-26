@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SFS Pack Tool v2.3.5-PyQt —— PyQt5 + SiliconUI 界面。
+"""SFS Pack Tool v2.3.6-PyQt —— PyQt5 + SiliconUI 界面。
 
 界面层只负责「长相与交互」，业务流程（导出 / 并入 / 剥离 / 汉化）全部在
 `sfs_pack_tool_logic.py` 里，Tk 旧界面（legacy/）与本界面共用同一份逻辑。
@@ -1349,6 +1349,7 @@ class App(QMainWindow, LogicMixin):
             "strip_platform": (self.selected_strip_platforms() or ["WindowsBuild"])[0],
             "install_to_toolkit": bool(self.install_var.get()),
             "incremental_export": bool(self.incremental_var.get()),
+            "repair_engine_17": bool(self.settings.get("repair_engine_17", False)),
             "geometry": self.settings.get("geometry", ""),
         })
 
@@ -1936,6 +1937,9 @@ class App(QMainWindow, LogicMixin):
         incr_toggle = ToggleRow(self.t("settings_incremental"), adv_card,
                                 value=bool(self.settings.get("incremental_export", False)))
         adv_card.addWidget(incr_toggle)
+        repair17_toggle = ToggleRow(self.t("settings_repair_engine_17"), adv_card,
+                                    value=bool(self.settings.get("repair_engine_17", False)))
+        adv_card.addWidget(repair17_toggle)
         probe_btn = Btn(self.t("settings_probe"), adv_card, kind=Btn.KIND_NORMAL,
                         icon_name="ic_fluent_pulse_16_filled")
         probe_btn.clicked.connect(self.start_probe)
@@ -2003,6 +2007,7 @@ class App(QMainWindow, LogicMixin):
                 "log_keep_days": days,
             })
             self.incremental_var.set(bool(incr_toggle.isChecked()))
+            self.settings["repair_engine_17"] = bool(repair17_toggle.isChecked())
             self.save_user_settings()
 
             if mode == "version":
@@ -2068,7 +2073,7 @@ def main() -> int:
     if os.name == "nt":
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "AFuturestar.SFSPackTool.2.3.5-PyQt")
+                "AFuturestar.SFSPackTool.2.3.6-PyQt")
         except (AttributeError, OSError):
             pass
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)

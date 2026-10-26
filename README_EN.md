@@ -1,4 +1,4 @@
-# SFS Pack Tool V2.3.4
+# SFS Pack Tool V2.3.6-PyQt
 > **Localization writing, stripping, Prefab/texture export, and Unity project recovery**  
 > Embedded AssetRipper 1.1.4 · Windows x64 · GPL-3.0-compliant distribution
 >
@@ -132,4 +132,4 @@ The embedded [AssetRipper][1] 1.1.4 runtime is licensed under the [GNU General P
 [2]: https://www.gnu.org/licenses/gpl-3.0.html
 
 ---
-**SFS Pack Tool V2.3.4 · A Future star**
+**SFS Pack Tool V2.3.6-PyQt · A Future star**

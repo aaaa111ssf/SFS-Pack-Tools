@@ -35,8 +35,8 @@ from sfs_official_keys import OFFICIAL_LOC_KEYS
 DEFAULT_AUTHOR = "A Future star"
 # 版本号的单一信息源。改版本时要同步：SFS_Pack_Tool.spec 的 name= 与注释、
 # build.bat / build_and_sign.bat / sign.bat、APP_USER_MODEL_ID、tutorial.html。
-VERSION = "2.3.5-PyQt"
-VERSION_TITLE = "V2.3.5-PyQt"
+VERSION = "2.3.6-PyQt"
+VERSION_TITLE = "V2.3.6-PyQt"
 EXCLUDE_WORDS = {
     "Color_Gray", "Toggle", "width", "target_state", "tank", "height", "DeployParachute",
     "Landing_Leg_Expanded", "Basic_Parts", "Color_Black", "Color_White", "Flat Smooth 4",
@@ -71,7 +71,7 @@ PLATFORM_NAMES = {
 }
 TEXT = {
     "zh": {
-        "window": "SFS Pack Tool V2.3.5-PyQt - Localization & Unity Export-by A Future star",
+        "window": "SFS Pack Tool V2.3.6-PyQt - Localization & Unity Export-by A Future star",
         "title": "SFS Pack Tool " + VERSION_TITLE,
         "subtitle": "汉化写入 · Prefab · 贴图 · Unity 工程导出 · 免挂提取",
         "language": "语言",
@@ -145,6 +145,9 @@ TEXT = {
         "settings_keep_days": "日志保留天数：",
         "settings_section_adv": "高级",
         "settings_incremental": "增量导出（包与 Toolkit 都未变时跳过重复导出）",
+        "settings_repair_engine_17": "实验：1.7 引擎自动修复（未发布，仅测试用）",
+        "repair17_skip": "[1.7修复] 目标 Toolkit 不是 1.7 推进重构版，已跳过",
+        "repair17_fail": "[1.7修复] [!] 失败 {exc}",
         "settings_probe": "探测当前 Toolkit 版本",
         "settings_apply": "应用",
         "settings_cancel": "取消",
@@ -342,7 +345,7 @@ TEXT = {
         "about_author_text": "作者：A Future star\n本工具由 A Future star 开发并维护，用于降低 SFS mod 制作门槛。\n如有问题或建议，欢迎加入 QQ 群交流。",
     },
     "en": {
-        "window": "SFS Pack Tool V2.3.5-PyQt - Localization & Unity Export-by A Future star",
+        "window": "SFS Pack Tool V2.3.6-PyQt - Localization & Unity Export-by A Future star",
         "title": "SFS Pack Tool " + VERSION_TITLE,
         "subtitle": "Localization · Prefab · Textures · Unity Export · Keep-alive extraction",
         "language": "Language:",
@@ -415,6 +418,9 @@ TEXT = {
         "settings_keep_days": "Keep logs for (days):",
         "settings_section_adv": "Advanced",
         "settings_incremental": "Incremental export (skip when pack and Toolkit are unchanged)",
+        "settings_repair_engine_17": "Experimental: 1.7 engine auto-repair (unreleased, testing only)",
+        "repair17_skip": "[1.7 repair] Target Toolkit is not the 1.7 propulsion rebase; skipped",
+        "repair17_fail": "[1.7 repair] [!] Failed: {exc}",
         "settings_probe": "Probe the current Toolkit version",
         "settings_apply": "Apply",
         "settings_cancel": "Cancel",
@@ -938,7 +944,7 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
-APP_USER_MODEL_ID = "AFuturestar.SFSPackTool.2.3.5-PyQt"
+APP_USER_MODEL_ID = "AFuturestar.SFSPackTool.2.3.6-PyQt"
 _WM_SETICON = 0x0080
 _IMAGE_ICON = 1
 _LR_LOADFROMFILE = 0x00000010
@@ -1767,6 +1773,21 @@ class LogicMixin:
                     backup_dir=exported_dir / "_DEDUPE_BACKUP")
             except Exception as exc:
                 log(self.t("log_dedupe_fail", exc=exc))
+
+            # 1.86) [实验] 1.7（Propulsion-Rebase）引擎自动修复：给旧 mod 的引擎/助推器
+            #       补齐 heatHitbox / isVacuum / multipleNozzles / heatHitboxes / boosterOn 等
+            #       新字段（仅当设置里打开「实验：1.7 引擎自动修复」时运行）
+            if self.settings.get("repair_engine_17", False):
+                advance()
+                try:
+                    import sfs_pack_core as keepalive
+                    rrep = keepalive.repair_engine_modules_for_17(
+                        exported_dir / "Assets", Path(toolkit_dir), log=self.tlog,
+                        backup_dir=exported_dir / "_ENGINE17_BACKUP")
+                    if rrep.get("skip"):
+                        log(self.t("repair17_skip"))
+                except Exception as exc:
+                    log(self.t("repair17_fail", exc=exc))
 
             # 1.9) 合并闸门：仍有脚本 GUID 在工程里查无此人 → 拒绝合并并落排查清单
             if gate_report:
