@@ -51,35 +51,76 @@ from sfs_pack_tool_logic import (  # noqa: F401  (部分名字是给 test_core_s
 )
 
 # --------------------------------------------------------------------------- #
-# 配色（与 SiliconUI 的 DarkColorGroup 完全一致，避免两套灰互相打架）
-# --------------------------------------------------------------------------- #
-BG_WINDOW = "#1C191F"
-BG_PANEL = "#25222A"
-BG_CARD_FORE = "#332E38"
-BG_CARD_BACK = "#1C191F"
-BORDER = "#2E2836"
-ACCENT = "#855198"
-ACCENT_LIGHT = "#C58BC2"
-TEXT_A = "#E5E5E5"
-TEXT_B = "#DFDFDF"
-TEXT_C = "#C7C7C7"
-TEXT_D = "#AFAFAF"
-TEXT_E = "#979797"
-DANGER = "#B4506A"
+# 两套配色：暗色 / 日间。设置里切换，改这里就换肤。
+PALETTES = {
+    "dark": {
+        "window": "#1C191F", "panel": "#25222A", "card_fore": "#332E38",
+        "card_back": "#1C191F", "border": "#2E2836",
+        "accent": "#855198", "accent_light": "#C58BC2",
+        "text_a": "#E5E5E5", "text_b": "#DFDFDF", "text_c": "#C7C7C7",
+        "text_d": "#AFAFAF", "text_e": "#979797",
+        "danger": "#B4506A", "warn": "#C79A5B",
+        "nav_checked_text": "#FFFFFF",
+        "tooltip_bg": "#4C4554", "tooltip_text": "#E5E5E5", "tooltip_border": "#5C5566",
+        "scroll": "#4A4354", "scroll_hover": "#5E5669",
+        "chip_bg": "rgba(133, 81, 152, 0.18)",
+        "chip_border": "rgba(197, 139, 194, 0.35)",
+        "btn_normal": "#4C4554", "btn_normal_text": "#DFDFDF",
+        "btn_accent": "#6E4A80", "btn_accent_text": "#FFFFFF",
+        "btn_ghost": "#332E38", "btn_ghost_text": "#C7C7C7",
+        "btn_danger": "#6B3140", "btn_danger_text": "#F0D5DB",
+        "btn_off_bg": "#2A2530", "btn_off_shadow": "#1C191F", "btn_off_text": "#6A6273",
+        "card_face": "#332E38", "card_shadow": "#1C191F",
+        "input_title_bg": "#28252D", "input_text_bg": "#201D23",
+        "input_text": "#D1CBD4", "input_title_idle": "#918497",
+        "input_title_focus": "#D1CBD4", "progress_track": "#25222A",
+        "switch_off": "#847B90",
+        "log_error": "#E08A9B", "log_info": "#8FB8D8", "log_ok": "#8FCB9B",
+        "progress": "#A46FBB",
+        "icon": "#DFDFDF",
+    },
+    "light": {
+        "window": "#F3F1F5", "panel": "#FFFFFF", "card_fore": "#EAE6EF",
+        "card_back": "#FFFFFF", "border": "#DDD7E3",
+        "accent": "#7B4B8E", "accent_light": "#6E3F82",
+        "text_a": "#1F1B24", "text_b": "#2A2630", "text_c": "#3A3640",
+        "text_d": "#5A5560", "text_e": "#7A7482",
+        "danger": "#B23A52", "warn": "#A67833",
+        "nav_checked_text": "#1F1B24",
+        "tooltip_bg": "#FFFFFF", "tooltip_text": "#2A2630", "tooltip_border": "#DDD7E3",
+        "scroll": "#CFC9D8", "scroll_hover": "#B9B1C4",
+        "chip_bg": "rgba(123, 75, 142, 0.12)",
+        "chip_border": "rgba(123, 75, 142, 0.30)",
+        "btn_normal": "#E4E0EA", "btn_normal_text": "#2A2630",
+        "btn_accent": "#7B4B8E", "btn_accent_text": "#FFFFFF",
+        "btn_ghost": "#F0EEF3", "btn_ghost_text": "#3A3640",
+        "btn_danger": "#B23A52", "btn_danger_text": "#FFFFFF",
+        "btn_off_bg": "#ECEAF0", "btn_off_shadow": "#DDD9E4", "btn_off_text": "#A9A3B2",
+        "card_face": "#FFFFFF", "card_shadow": "#DCD6E2",
+        "input_title_bg": "#E7E2EE", "input_text_bg": "#F6F4F9",
+        "input_text": "#2A2630", "input_title_idle": "#6B6478",
+        "input_title_focus": "#1F1B24", "progress_track": "#E8E4EE",
+        "switch_off": "#B9B1C4",
+        "log_error": "#B23A52", "log_info": "#3A6E96", "log_ok": "#2E7D5B",
+        "progress": "#8A5AA0",
+        "icon": "#5A5560",
+    },
+}
 
-# 历史上被写进配置的老作者名：启动时自动换成 DEFAULT_AUTHOR
-LEGACY_AUTHORS = {"〈A Future star汉化〉", "A Future star(汉化)", "A Future star汉化"}
+THEME_NAME = "dark"
 
-APP_STYLE = f"""
+
+def _build_app_style(c):
+    return f"""
 QWidget {{
     font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
     font-size: 13px;
-    color: {TEXT_C};
+    color: {c['text_c']};
 }}
 QToolTip {{
-    background-color: #4C4554;
-    color: {TEXT_A};
-    border: 1px solid #5C5566;
+    background-color: {c['tooltip_bg']};
+    color: {c['tooltip_text']};
+    border: 1px solid {c['tooltip_border']};
     padding: 6px 8px;
     border-radius: 6px;
 }}
@@ -87,42 +128,44 @@ QScrollBar:vertical {{
     background: transparent; width: 10px; margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: #4A4354; border-radius: 4px; min-height: 28px;
+    background: {c['scroll']}; border-radius: 4px; min-height: 28px;
 }}
-QScrollBar::handle:vertical:hover {{ background: #5E5669; }}
+QScrollBar::handle:vertical:hover {{ background: {c['scroll_hover']}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-QScrollBar::handle:horizontal {{ background: #4A4354; border-radius: 4px; min-width: 28px; }}
+QScrollBar::handle:horizontal {{ background: {c['scroll']}; border-radius: 4px; min-width: 28px; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
 
 QPlainTextEdit#log {{
-    background: {BG_CARD_BACK};
-    border: 1px solid {BORDER};
+    background: {c['card_back']};
+    border: 1px solid {c['border']};
     border-radius: 8px;
-    color: {TEXT_C};
+    color: {c['text_c']};
     font-family: "Cascadia Mono", "Consolas", "JetBrains Mono";
     font-size: 12px;
     padding: 8px 10px;
-    selection-background-color: {ACCENT};
+    selection-background-color: {c['accent']};
 }}
-QLabel#cardTitle {{ color: {TEXT_A}; font-size: 13px; font-weight: 600; }}
-QLabel#pageTitle {{ color: {TEXT_A}; font-size: 20px; font-weight: 700; }}
-QLabel#pageSubtitle {{ color: {TEXT_E}; font-size: 12px; }}
-QLabel#hint {{ color: {TEXT_E}; font-size: 11px; }}
-QLabel#pathLabel {{ color: {TEXT_D}; font-size: 12px; }}
-QLabel#status {{ color: {TEXT_D}; font-size: 12px; }}
+QLabel#cardTitle {{ color: {c['text_a']}; font-size: 13px; font-weight: 600; }}
+QLabel#pageTitle {{ color: {c['text_a']}; font-size: 20px; font-weight: 700; }}
+QLabel#pageSubtitle {{ color: {c['text_e']}; font-size: 12px; }}
+QLabel#hint {{ color: {c['text_e']}; font-size: 11px; }}
+QLabel#pathLabel {{ color: {c['text_d']}; font-size: 12px; }}
+QLabel#status {{ color: {c['text_d']}; font-size: 12px; }}
 QLabel#chip {{
-    color: {ACCENT_LIGHT}; background: rgba(133, 81, 152, 0.18);
-    border: 1px solid rgba(197, 139, 194, 0.35);
+    color: {c['accent_light']}; background: {c['chip_bg']};
+    border: 1px solid {c['chip_border']};
     border-radius: 9px; padding: 2px 9px; font-size: 11px; font-weight: 600;
 }}
-QLabel#dim {{ color: {TEXT_E}; }}
+QLabel#dim {{ color: {c['text_e']}; }}
 """
 
-NAV_STYLE = f"""
+
+def _build_nav_style(c):
+    return f"""
 QToolButton#nav {{
-    color: {TEXT_C};
+    color: {c['text_c']};
     background: transparent;
     border: none;
     border-radius: 10px;
@@ -130,16 +173,77 @@ QToolButton#nav {{
     text-align: left;
     font-size: 13px;
 }}
-QToolButton#nav:hover {{ background: {BG_PANEL}; color: {TEXT_A}; }}
+QToolButton#nav:hover {{ background: {c['panel']}; color: {c['text_a']}; }}
 QToolButton#nav:checked {{
-    background: {BG_CARD_FORE}; color: #FFFFFF; font-weight: 600;
+    background: {c['card_fore']}; color: {c['nav_checked_text']}; font-weight: 600;
 }}
 QToolButton#navSmall {{
-    color: {TEXT_E}; background: transparent; border: none;
+    color: {c['text_e']}; background: transparent; border: none;
     border-radius: 8px; padding: 7px 12px; text-align: left; font-size: 12px;
 }}
-QToolButton#navSmall:hover {{ color: {TEXT_A}; background: {BG_PANEL}; }}
+QToolButton#navSmall:hover {{ color: {c['text_a']}; background: {c['panel']}; }}
 """
+
+
+def apply_theme(name):
+    """切换整套配色：重写模块常量，并同步 SiliconUI 自己的色板。"""
+    global THEME_NAME, BG_WINDOW, BG_PANEL, BG_CARD_FORE, BG_CARD_BACK, BORDER
+    global ACCENT, ACCENT_LIGHT, DANGER, WARN, TEXT_A, TEXT_B, TEXT_C, TEXT_D, TEXT_E
+    global TOOLTIP_BG, TOOLTIP_TEXT, TOOLTIP_BORDER, SCROLL, SCROLL_HOVER
+    global CHIP_BG, CHIP_BORDER, BTN_OFF_BG, BTN_OFF_SHADOW, BTN_OFF_TEXT
+    global SWITCH_OFF, LOG_ERROR, LOG_INFO, LOG_OK, PROGRESS_COLOR, ICON_COLOR
+    global CARD_FACE, CARD_SHADOW, INPUT_TITLE_BG, INPUT_TEXT_BG, INPUT_TEXT
+    global INPUT_TITLE_IDLE, INPUT_TITLE_FOCUS, PROGRESS_TRACK
+    global APP_STYLE, NAV_STYLE
+
+    name = name if name in PALETTES else "dark"
+    c = PALETTES[name]
+    THEME_NAME = name
+    BG_WINDOW = c["window"]; BG_PANEL = c["panel"]
+    BG_CARD_FORE = c["card_fore"]; BG_CARD_BACK = c["card_back"]
+    BORDER = c["border"]; ACCENT = c["accent"]; ACCENT_LIGHT = c["accent_light"]
+    DANGER = c["danger"]; WARN = c["warn"]
+    TEXT_A = c["text_a"]; TEXT_B = c["text_b"]; TEXT_C = c["text_c"]
+    TEXT_D = c["text_d"]; TEXT_E = c["text_e"]
+    TOOLTIP_BG = c["tooltip_bg"]; TOOLTIP_TEXT = c["tooltip_text"]
+    TOOLTIP_BORDER = c["tooltip_border"]
+    SCROLL = c["scroll"]; SCROLL_HOVER = c["scroll_hover"]
+    CHIP_BG = c["chip_bg"]; CHIP_BORDER = c["chip_border"]
+    BTN_OFF_BG = c["btn_off_bg"]; BTN_OFF_SHADOW = c["btn_off_shadow"]
+    BTN_OFF_TEXT = c["btn_off_text"]
+    SWITCH_OFF = c["switch_off"]
+    LOG_ERROR = c["log_error"]; LOG_INFO = c["log_info"]; LOG_OK = c["log_ok"]
+    PROGRESS_COLOR = c["progress"]; ICON_COLOR = c["icon"]
+    CARD_FACE = c["card_face"]; CARD_SHADOW = c["card_shadow"]
+    INPUT_TITLE_BG = c["input_title_bg"]; INPUT_TEXT_BG = c["input_text_bg"]
+    INPUT_TEXT = c["input_text"]; INPUT_TITLE_IDLE = c["input_title_idle"]
+    INPUT_TITLE_FOCUS = c["input_title_focus"]; PROGRESS_TRACK = c["progress_track"]
+    APP_STYLE = _build_app_style(c)
+    NAV_STYLE = _build_nav_style(c)
+    # SiliconUI 的卡片/输入框/开关/进度条用它们自己的色板，这里一起切
+    try:
+        from siui.gui import BrightColorGroup, DarkColorGroup
+        SiGlobal.siui.colors = BrightColorGroup() if name == "light" else DarkColorGroup()
+    except Exception:
+        pass
+
+
+def btn_palette(kind):
+    """按钮各档配色，跟随当前主题。"""
+    c = PALETTES[THEME_NAME]
+    if kind == "accent":
+        return c["btn_accent"], c["btn_accent_text"]
+    if kind == "ghost":
+        return c["btn_ghost"], c["btn_ghost_text"]
+    if kind == "danger":
+        return c["btn_danger"], c["btn_danger_text"]
+    return c["btn_normal"], c["btn_normal_text"]
+
+
+apply_theme("dark")
+
+# 历史上被写进配置的老作者名：启动时自动换成 DEFAULT_AUTHOR
+LEGACY_AUTHORS = {"〈A Future star汉化〉", "A Future star(汉化)", "A Future star汉化"}
 
 
 # --------------------------------------------------------------------------- #
@@ -185,13 +289,14 @@ def _iconpack():
     return SiGlobal.siui.iconpack
 
 
-def si_icon(name: str, color: str = TEXT_C, size: int = 18) -> QIcon:
+def si_icon(name: str, color: str = "", size: int = 18) -> QIcon:
     """按名字取 SiliconUI 内置的 Fluent 图标并渲染成 QIcon。
 
     图标包里的名字不带尺寸段（`ic_fluent_info_filled`），而官方示例经常写
     `ic_fluent_info_16_filled`——后者在包里根本不存在，直接 get() 会抛 KeyError，
     于是图标静默消失。这里两种写法都试一遍。
     """
+    color = color or TEXT_C
     pack = _iconpack()
     candidates = [name]
     stripped = re.sub(r"_\d+_", "_", name)
@@ -221,9 +326,9 @@ def si_icon(name: str, color: str = TEXT_C, size: int = 18) -> QIcon:
 class Panel(QWidget):
     """圆角纯色面板（自己画，比 QSS 的 border-radius 更干净）。"""
 
-    def __init__(self, parent=None, bg=BG_PANEL, radius=12, border=None, margins=(0, 0, 0, 0)):
+    def __init__(self, parent=None, bg=None, radius=12, border=None, margins=(0, 0, 0, 0)):
         super().__init__(parent)
-        self._bg = QColor(bg)
+        self._bg = QColor(bg or BG_PANEL)
         self._radius = radius
         self._border = QColor(border) if border else None
         # 注意：一个 widget 只能有一个布局。这里的布局对外暴露成 self.lay，
@@ -252,13 +357,6 @@ class Btn(SiPushButtonRefactor):
     KIND_GHOST = "ghost"
     KIND_DANGER = "danger"
 
-    _PALETTE = {
-        KIND_NORMAL: ("#4C4554", "#3A3442", "#DFDFDF"),
-        KIND_ACCENT: ("#6E4A80", "#52336B", "#FFFFFF"),
-        KIND_GHOST: ("#332E38", "#3F3947", "#C7C7C7"),
-        KIND_DANGER: ("#6B3140", "#4F2430", "#F0D5DB"),
-    }
-
     def __init__(self, text="", parent=None, kind=KIND_NORMAL, icon_name=None,
                  height=38, min_width=0, tooltip=""):
         super().__init__(parent)
@@ -273,11 +371,10 @@ class Btn(SiPushButtonRefactor):
         self.style_data.border_height = 3
         self.style_data.icon_text_gap = 6
         if icon_name:
-            self.setIcon(si_icon(icon_name, "#DFDFDF", 16))
+            self.setIcon(si_icon(icon_name, ICON_COLOR, 16))
             self.setIconSize(QSize(15, 15))
         self.setText(text)
-        bg, _shadow, text_color = self._PALETTE.get(
-            kind, self._PALETTE[self.KIND_NORMAL])
+        bg, text_color = btn_palette(kind)
         self.setColors(bg, text_color)
         if tooltip:
             self.setToolTip(tooltip)
@@ -303,12 +400,11 @@ class Btn(SiPushButtonRefactor):
     def setEnabled(self, enabled):  # noqa: N802
         super().setEnabled(enabled)
         if not enabled:
-            self.style_data.button_color = QColor("#2A2530")
-            self.style_data.background_color = QColor("#1C191F")
-            self.style_data.text_color = QColor("#6A6273")
+            self.style_data.button_color = QColor(BTN_OFF_BG)
+            self.style_data.background_color = QColor(BTN_OFF_SHADOW)
+            self.style_data.text_color = QColor(BTN_OFF_TEXT)
         else:
-            bg, _shadow, text_color = self._PALETTE.get(
-                self._kind, self._PALETTE[self.KIND_NORMAL])
+            bg, text_color = btn_palette(self._kind)
             self.style_data.button_color = QColor(bg)
             self.style_data.background_color = QColor(bg).darker(150)
             self.style_data.text_color = QColor(text_color)
@@ -326,7 +422,7 @@ class ToggleRow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
         self.switch = SiSwitch(self)
-        self.switch.colorGroup().assign(SiColor.SWITCH_DEACTIVATE, "#847B90")
+        self.switch.colorGroup().assign(SiColor.SWITCH_DEACTIVATE, SWITCH_OFF)
         self.switch.colorGroup().assign(SiColor.SWITCH_ACTIVATE, ACCENT)
         self.switch.setChecked(value)
         self.switch.reloadStyleSheet()
@@ -368,6 +464,9 @@ class SectionCard(SiPanelCard):
         super().__init__(parent, SiPanelCard.TopToBottom)
         self.style_data.border_radius_fore = 9
         self.style_data.border_radius_back = 12
+        # 自带默认色是写死的深色，这里按当前主题覆盖
+        self.style_data.background_fore_color = QColor(CARD_FACE)
+        self.style_data.background_back_color = QColor(CARD_SHADOW)
 
         self._holder = QWidget(self)
         self.lay = QVBoxLayout(self._holder)
@@ -391,6 +490,26 @@ class SectionCard(SiPanelCard):
 
     def addLayout(self, layout):  # noqa: N802
         self.lay.addLayout(layout)
+
+
+class CapsuleEdit(SiCapsuleLineEdit):
+    """胶囊输入框：颜色跟主题走（siui 自带的默认色是写死的深色）。"""
+
+    def __init__(self, parent=None, title="Untitled"):
+        super().__init__(parent, title)
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self):
+        sd = self.style_data
+        sd.title_background_color = QColor(INPUT_TITLE_BG)
+        sd.text_background_color = QColor(INPUT_TEXT_BG)
+        sd.text_color = QColor(INPUT_TEXT)
+        sd.title_color_idle = QColor(INPUT_TITLE_IDLE)
+        sd.title_color_focused = QColor(INPUT_TITLE_FOCUS)
+        sd.title_color_error = QColor(DANGER)
+        self._title_color = QColor(INPUT_TITLE_IDLE)
+        self._initStyleSheet()
+        self.update()
 
 
 class ElidedLabel(QLabel):
@@ -448,13 +567,13 @@ class LogView(QPlainTextEdit):
         from html import escape
         lowered = text
         if "[!]" in lowered or "失败" in lowered or "错误" in lowered:
-            color = "#E08A9B"
+            color = LOG_ERROR
         elif text.startswith("[回滚]") or text.startswith("[预览]"):
             color = ACCENT_LIGHT
         elif text.startswith("[增量]") or text.startswith("[探测]"):
-            color = "#8FB8D8"
+            color = LOG_INFO
         elif "✓" in text or "完成" in text:
-            color = "#8FCB9B"
+            color = LOG_OK
         else:
             color = TEXT_C
         self.appendHtml(f'<span style="color:{color};">{escape(text)}</span>')
@@ -545,17 +664,20 @@ class Dialog(QDialog):
 class MsgBox(Dialog):
     """统一的提示框，替代 tk 的 messagebox（系统弹窗在深色界面里太刺眼）。"""
 
-    KINDS = {
-        "info": (ACCENT, "ic_fluent_info_16_filled"),
-        "warning": ("#C79A5B", "ic_fluent_warning_16_filled"),
-        "error": (DANGER, "ic_fluent_error_circle_16_filled"),
-        "question": (ACCENT, "ic_fluent_question_circle_16_filled"),
-    }
+    @staticmethod
+    def kinds():
+        return {
+            "info": (ACCENT, "ic_fluent_info_16_filled"),
+            "warning": (WARN, "ic_fluent_warning_16_filled"),
+            "error": (DANGER, "ic_fluent_error_circle_16_filled"),
+            "question": (ACCENT, "ic_fluent_question_circle_16_filled"),
+        }
 
     def __init__(self, parent, title, message, kind="info", ask=False,
                  ok_text="确定", cancel_text="取消"):
         super().__init__(parent, title, width=520)
-        color, icon_name = self.KINDS.get(kind, self.KINDS["info"])
+        kinds = self.kinds()
+        color, icon_name = kinds.get(kind, kinds["info"])
         self.result_value = False
 
         row = QHBoxLayout()
@@ -600,6 +722,8 @@ class App(QMainWindow, LogicMixin):
         self.settings = load_settings()
         locale = self.settings.get("language", "zh")
         self.locale = locale if locale in TEXT else "zh"
+        # 主题：设置里存 dark / light，先切好配色再搭界面
+        apply_theme(self.settings.get("theme", "dark"))
 
         self.input_file = ""
         self.translation_file = ""
@@ -685,7 +809,7 @@ class App(QMainWindow, LogicMixin):
             return
         try:
             hwnd = int(self.winId())
-            value = ctypes.c_int(1)
+            value = ctypes.c_int(1 if THEME_NAME == "dark" else 0)
             for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
                 if ctypes.windll.dwmapi.DwmSetWindowAttribute(
                         hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)) == 0:
@@ -846,6 +970,9 @@ class App(QMainWindow, LogicMixin):
         log_head.setSpacing(8)
         self.log_title = QLabel(self.t("log_title"), self.log_panel)
         self.log_title.setObjectName("cardTitle")
+        # 不关掉的话 QLabel 会把自己那块矩形涂成窗体底色，看起来像多个灰方块
+        self.log_title.setAttribute(Qt.WA_StyledBackground, False)
+        self.log_title.setStyleSheet("background: transparent;")
         log_head.addWidget(self.log_title)
         log_head.addStretch(1)
         self.clear_log_btn = Btn(self.t("clear_log"), self.log_panel, kind=Btn.KIND_GHOST,
@@ -873,7 +1000,8 @@ class App(QMainWindow, LogicMixin):
         self.progress = SiProgressBarRefactor(bottom)
         self.progress.setMinimumWidth(260)
         self.progress.setMaximum(1000)
-        self.progress.progressColor = QColor("#A46FBB")
+        self.progress.progressColor = QColor(PROGRESS_COLOR)
+        self.progress.style_data.background_color = QColor(PROGRESS_TRACK)
         self.progress.setState(SiProgressBarRefactor.State.Processing)
         blay.addWidget(self.progress, 1)
         self.status_label = QLabel(self.t("progress_idle"), bottom)
@@ -1035,7 +1163,7 @@ class App(QMainWindow, LogicMixin):
         card_export = SectionCard(self.t("export_frame"))
         tk_row = QHBoxLayout()
         tk_row.setSpacing(10)
-        self.toolkit_edit = SiCapsuleLineEdit(card_export, self.t("toolkit_dir"))
+        self.toolkit_edit = CapsuleEdit(card_export, self.t("toolkit_dir"))
         self.toolkit_edit.setText(self.toolkit_dir_var.get())
         self.toolkit_edit.setMinimumHeight(46)
         self.toolkit_edit.textChanged.connect(self.toolkit_dir_var.set)
@@ -1107,7 +1235,7 @@ class App(QMainWindow, LogicMixin):
         card = SectionCard(self.t("translator_frame"))
         author_row = QHBoxLayout()
         author_row.setSpacing(10)
-        self.author_edit = SiCapsuleLineEdit(card, self.t("author"))
+        self.author_edit = CapsuleEdit(card, self.t("author"))
         self.author_edit.setText(self.author_var.get())
         self.author_edit.setMinimumHeight(46)
         self.author_edit.textChanged.connect(self.author_var.set)
@@ -1116,7 +1244,7 @@ class App(QMainWindow, LogicMixin):
 
         out_row = QHBoxLayout()
         out_row.setSpacing(10)
-        self.extract_edit = SiCapsuleLineEdit(card, self.t("extract_path"))
+        self.extract_edit = CapsuleEdit(card, self.t("extract_path"))
         self.extract_edit.setText(self.extract_output_var.get())
         self.extract_edit.setMinimumHeight(46)
         self.extract_edit.setPlaceholderText("texts_to_translate.json")
@@ -1198,7 +1326,7 @@ class App(QMainWindow, LogicMixin):
 
         out_row = QHBoxLayout()
         out_row.setSpacing(10)
-        self.strip_edit = SiCapsuleLineEdit(card, self.t("select_strip_output"))
+        self.strip_edit = CapsuleEdit(card, self.t("select_strip_output"))
         self.strip_edit.setText(self.strip_output_var.get())
         self.strip_edit.setMinimumHeight(46)
         self.strip_edit.textChanged.connect(self.strip_output_var.set)
@@ -1340,6 +1468,7 @@ class App(QMainWindow, LogicMixin):
     def save_user_settings(self) -> None:
         save_settings({
             "language": self.locale,
+            "theme": self.settings.get("theme", THEME_NAME),
             "author": self.author_var.get(),
             "toolkit_dir": self.toolkit_dir_var.get().strip(),
             "package_dir": self.package_dir_var.get().strip(),
@@ -1872,7 +2001,7 @@ class App(QMainWindow, LogicMixin):
 
         ver_row = QHBoxLayout()
         ver_row.setSpacing(10)
-        ver_edit = SiCapsuleLineEdit(card, self.t("settings_ripper_ver_label"))
+        ver_edit = CapsuleEdit(card, self.t("settings_ripper_ver_label"))
         ver_edit.setText(str(self.settings.get("asset_ripper_version", "") or ""))
         ver_edit.setMinimumHeight(44)
         ver_row.addWidget(ver_edit, 1)
@@ -1880,7 +2009,7 @@ class App(QMainWindow, LogicMixin):
 
         path_row = QHBoxLayout()
         path_row.setSpacing(10)
-        path_edit = SiCapsuleLineEdit(card, self.t("settings_ripper_path_label"))
+        path_edit = CapsuleEdit(card, self.t("settings_ripper_path_label"))
         path_edit.setText(str(self.settings.get("asset_ripper_path", "") or ""))
         path_edit.setMinimumHeight(44)
         path_row.addWidget(path_edit, 1)
@@ -1923,7 +2052,7 @@ class App(QMainWindow, LogicMixin):
                            height=34, icon_name="ic_fluent_folder_open_16_filled")
         open_dir_btn.clicked.connect(self.open_log_dir)
         log_row.addWidget(open_dir_btn)
-        days_edit = SiCapsuleLineEdit(log_card, self.t("settings_keep_days"))
+        days_edit = CapsuleEdit(log_card, self.t("settings_keep_days"))
         days_edit.setText(str(self.settings.get("log_keep_days", 30)))
         days_edit.setFixedWidth(200)
         days_edit.setMinimumHeight(44)
@@ -1931,6 +2060,13 @@ class App(QMainWindow, LogicMixin):
         log_row.addStretch(1)
         log_card.addLayout(log_row)
         dialog.body.addWidget(log_card)
+
+        # --- 外观 ---
+        look_card = SectionCard(self.t("settings_section_appearance"), dialog.panel)
+        theme_toggle = ToggleRow(self.t("settings_theme_light"), look_card,
+                                 value=self.settings.get("theme", "dark") == "light")
+        look_card.addWidget(theme_toggle)
+        dialog.body.addWidget(look_card)
 
         # --- 高级 ---
         adv_card = SectionCard(self.t("settings_section_adv"), dialog.panel)
@@ -1953,8 +2089,8 @@ class App(QMainWindow, LogicMixin):
         def select_mode(value: str):
             mode_buttons[value].setChecked(True)
             for key, button in mode_buttons.items():
-                button.setColors(*(("#6E4A80", "#FFFFFF") if key == value
-                                   else ("#332E38", "#C7C7C7")))
+                button.setColors(*(btn_palette("accent") if key == value
+                                   else btn_palette("ghost")))
             ver_edit.setEnabled(value == "version")
             path_edit.setEnabled(value == "custom")
             pick_exe.setEnabled(value == "custom")
@@ -2008,6 +2144,7 @@ class App(QMainWindow, LogicMixin):
             })
             self.incremental_var.set(bool(incr_toggle.isChecked()))
             self.settings["repair_engine_17"] = bool(repair17_toggle.isChecked())
+            self.settings["theme"] = "light" if theme_toggle.isChecked() else "dark"
             self.save_user_settings()
 
             if mode == "version":
@@ -2029,6 +2166,24 @@ class App(QMainWindow, LogicMixin):
         dialog.add_button(self.t("settings_apply"), apply_settings,
                           kind=Btn.KIND_ACCENT, default=True)
         dialog.exec_()
+
+        # 主题变了就整体重建一次（日志内容保留）
+        if self.settings.get("theme", "dark") != THEME_NAME:
+            self.apply_theme_and_rebuild(self.settings.get("theme", "dark"))
+
+    def apply_theme_and_rebuild(self, name: str) -> None:
+        """换主题：切配色后重建界面，日志按新配色重画。"""
+        page = self.pages.currentIndex() if hasattr(self, "pages") else 0
+        apply_theme(name)
+        self.setStyleSheet(APP_STYLE)
+        self._build_shell()
+        self.build_ui()
+        try:
+            self.switch_page(page)
+        except Exception:
+            pass
+        self._enable_dark_titlebar()
+        self.refresh_logs()
 
     # ---------------- 关于 ----------------
     def open_tutorial(self) -> None:

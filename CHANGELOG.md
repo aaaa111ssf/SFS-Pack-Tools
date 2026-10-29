@@ -8,6 +8,29 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt 追加（2026-10-29）
+
+### 中文
+
+界面支持**暗色 / 日间两套主题**，在「设置 → 外观」里切换，选择会记住，下次启动沿用。
+
+- 两套配色各自完整：窗口、面板、卡片面/阴影、输入框、按钮四档、开关、进度条、日志着色、
+  滚动条、提示气泡、图标颜色都跟着变；默认仍是暗色，老用户不受影响。
+- 切换后界面立即重建，日志内容保留（按新配色重画）。
+- 系统标题栏同步：暗色模式走 DWM 深色标题栏，日间模式关掉。
+
+### English
+
+The UI now has **dark and light themes**, switchable in Settings → Appearance. The choice is
+remembered across restarts; dark stays the default so existing users see no change.
+
+- Both palettes cover window, panels, card face/shadow, inputs, all four button kinds,
+  switches, progress bar, log colouring, scrollbars, tooltips and icon colours.
+- Switching rebuilds the window immediately and keeps the log content (redrawn in the new palette).
+- The native title bar follows suit (DWM dark title bar only in dark mode).
+
+---
+
 ## v2.3.6-PyQt — 2026-10-26
 
 ### 中文
