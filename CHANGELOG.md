@@ -8,6 +8,43 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt 修复（2026-10-31）
+
+### 中文
+
+**汉化写回把标识符也改了**：写回是按"文本值"匹配的，同一句话出现在
+`PickCategory.m_Name`、`saves[].name`、`variableName` 里时会被一并替换成中文，
+导致分类对不上、变量丢失、部件栏空白。
+
+- 写回改为**字段白名单**：只有 `DISPLAY_LEAF_FIELDS`（DisplayName / Description /
+  TranslatableName / Text / Title / Label / Unit / Author 等）可写；
+- 并**显式排除标识符**（`IDENTIFIER_LEAF_FIELDS`：m_Name / name / variableName /
+  m_MethodName / saves / points / elements / id / type / key …），命中即跳过；
+- `TranslatableName` 仅当 `plainText=1` 才写（`plainText=0` 是查表 key，翻了会显示 NULL）；
+- 日志新增"跳过 N 处标识符"，便于核对。
+
+验证：新增 `test_translation_writeback.py`（23 项）；并用真实包
+`QMSP's Life Support v1.0.1.pack` 跑端到端——17 条文本、4 平台各改 26 处、
+跳过 16 处标识符、显示字段改写 100 处、标识符误改 0。
+
+### English
+
+**Write-back no longer touches identifiers.** The replacement used to match by string
+value only, so a name also present in `PickCategory.m_Name`, `saves[].name` or
+`variableName` was translated too, breaking categories and variables.
+
+- Write-back is now field-gated: only `DISPLAY_LEAF_FIELDS` may change;
+- `IDENTIFIER_LEAF_FIELDS` (m_Name / name / variableName / saves / points / elements / id …)
+  are skipped outright;
+- `TranslatableName` is written only when `plainText=1` (otherwise it is a lookup key);
+- The log now reports how many identifiers were skipped.
+
+Verified with `test_translation_writeback.py` (23 checks) and an end-to-end run on
+`QMSP's Life Support v1.0.1.pack`: 17 strings, 26 changes per platform, 16 identifiers
+skipped, 100 display fields rewritten, 0 identifiers modified.
+
+---
+
 ## v2.3.6-PyQt 追加（2026-10-29）
 
 ### 中文

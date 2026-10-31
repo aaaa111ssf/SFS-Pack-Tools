@@ -58,6 +58,13 @@ INTERNAL_LEAF_FIELDS = {
     "variableName", "input", "output", "name", "id", "type", "key", "reference",
     "tag", "layer", "fragmentName", "saves", "points", "elements",
 }
+# 写回时“打死也不改”的标识符字段：分类名、变量名、资源名等，改了游戏就对不上
+IDENTIFIER_LEAF_FIELDS = {
+    "m_Name", "name", "variableName", "m_MethodName", "m_ClassName", "m_Namespace",
+    "m_TypeName", "m_Script", "fragmentName", "saves", "points", "elements",
+    "id", "type", "key", "reference", "tag", "layer", "input", "output",
+    "m_GameObject", "m_Father", "m_Children", "m_Component",
+}
 # 人工确认区标记键：深度扫描的疑似串放这里，绝不自动写回
 CANDIDATES_KEY = "__CANDIDATES__"
 
@@ -275,6 +282,7 @@ TEXT = {
         "writing": "正在写入 {build}...",
         "decode_failed": "  ❌ {build} 解码失败 {error}",
         "write_done": "  ✔ {build} 完成 修改 {count} 处",
+        "write_identifiers_kept": "  [汉化] 跳过 {count} 处标识符（分类名/变量名等，不能翻译）",
         "save_failed": "  ❌ {build} 保存失败 {error}",
         "pack_done": "✔ 最终文件已生成 {path}",
         "output_failed": "❌ 输出失败 {error}",
@@ -550,6 +558,7 @@ TEXT = {
         "writing": "Writing {build}...",
         "decode_failed": "  ❌ {build} decode failed: {error}",
         "write_done": "  ✔ {build} done, {count} changes",
+        "write_identifiers_kept": "  [Loc] skipped {count} identifier(s) (category/variable names must stay)",
         "save_failed": "  ❌ {build} save failed: {error}",
         "pack_done": "✔ Output created: {path}",
         "output_failed": "❌ Output failed: {error}",
@@ -1052,6 +1061,74 @@ def is_candidate_text(text: object, path: str) -> bool:
     return leaf not in DISPLAY_LEAF_FIELDS and leaf not in INTERNAL_LEAF_FIELDS
 
 
+def _writable_loc_path(path: str, parent: object = None) -> bool:
+    """写回白名单：只有显示字段能改，标识符（分类名/变量名等）一律不碰。
+
+    写回是按“文本值”匹配的（翻译表只存字符串），若不看字段名，同一句话出现在
+    `PickCategory.m_Name`、`saves[].name`、`variableName` 里也会被一起改成中文，
+    分类/变量就对不上、部件栏空白。这里与提取端对称：只认显示叶字段。
+    """
+    leaf = leaf_field(path)
+    if leaf in IDENTIFIER_LEAF_FIELDS:      # 先按黑名单挡掉标识符
+        return False
+    if leaf not in DISPLAY_LEAF_FIELDS:     # 再按白名单放行
+        return False
+    if leaf == "TranslatableName" and not is_plain_text(parent):
+        return False                        # plainText=0 时它是查表 key，不是显示文本
+    return True
+
+
+def apply_translation_to_tree(tree: object, translations: dict, author: str = "") -> tuple[int, int]:
+    """把翻译写进一棵 typetree，只改显示字段，标识符一律不动。
+
+    返回 (改动条数, 因是标识符而跳过的条数)——后者只用于日志提示。
+    """
+    changed = 0
+    kept = 0
+
+    def should_write(value: str, path: str, parent: object) -> bool:
+        return (not is_exclude_word(value) and value in translations
+                and value not in OFFICIAL_LOC_KEYS
+                and _writable_loc_path(path, parent))
+
+    def walk(node: object, path: str = "") -> None:
+        nonlocal changed, kept
+        if isinstance(node, dict):
+            for key in list(node.keys()):
+                value = node[key]
+                child = f"{path}.{key}" if path else str(key)
+                if isinstance(value, str):
+                    if key == "Author":
+                        # 先翻译原文，再在结尾追加作者名，避免把翻译吞掉
+                        if not is_exclude_word(value) and value in translations:
+                            node[key] = translations[value]
+                            changed += 1
+                        if author and author not in node[key]:
+                            node[key] = node[key] + author
+                            changed += 1
+                    elif should_write(value, child, node):
+                        node[key] = translations[value]
+                        changed += 1
+                    elif value in translations:
+                        kept += 1               # 是翻译表里的串，但字段是标识符，故意不改
+                elif isinstance(value, (dict, list)):
+                    walk(value, child)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                child = f"{path}[{index}]"
+                if isinstance(value, str):
+                    if should_write(value, child, None):
+                        node[index] = translations[value]
+                        changed += 1
+                    elif value in translations:
+                        kept += 1
+                elif isinstance(value, (dict, list)):
+                    walk(value, child)
+
+    walk(tree)
+    return changed, kept
+
+
 def is_plain_text(parent: object) -> bool:
     """TranslationVariable 结构里 plainText 是否为真。
 
@@ -1152,6 +1229,7 @@ def write_translation(input_file: str, translation_file: str, author: str, trans
         for source, target in translations.items()
         if isinstance(source, str) and source != target and source != CANDIDATES_KEY
     }
+    kept_total = 0              # 因是标识符而跳过的条数（只做日志提示）
     for build in PLATFORM_KEYS:
         if not data.get(build):
             continue
@@ -1170,39 +1248,9 @@ def write_translation(input_file: str, translation_file: str, author: str, trans
                 if not tree:
                     continue
 
-                def replace(node: object, path: str = "") -> None:
-                    nonlocal changed
-                    if isinstance(node, dict):
-                        for key, value in list(node.items()):
-                            child = f"{path}.{key}" if path else str(key)
-                            if isinstance(value, str):
-                                if key == "Author":
-                                    # 先翻译 Author 原文，再在结尾追加作者名（避免“吞掉翻译”）
-                                    if not is_exclude_word(value) and value in translations:
-                                        node[key] = translations[value]
-                                        changed += 1
-                                    if author and author not in node[key]:
-                                        node[key] = node[key] + author
-                                        changed += 1
-                                elif (not is_exclude_word(value) and value in translations
-                                      and value not in OFFICIAL_LOC_KEYS):
-                                    # 官方翻译 key 不写回：老版本提取的 JSON 可能混入，
-                                    # 写回去游戏查表失败会显示 NULL
-                                    node[key] = translations[value]
-                                    changed += 1
-                            elif isinstance(value, (dict, list)):
-                                replace(value, child)
-                    elif isinstance(node, list):
-                        for index, value in enumerate(node):
-                            child = f"{path}[{index}]"
-                            if (isinstance(value, str) and not is_exclude_word(value)
-                                    and value in translations and value not in OFFICIAL_LOC_KEYS):
-                                node[index] = translations[value]
-                                changed += 1
-                            elif isinstance(value, (dict, list)):
-                                replace(value, child)
-
-                replace(tree)
+                changed_count, kept_count = apply_translation_to_tree(tree, translations, author)
+                changed += changed_count
+                kept_total += kept_count
                 obj.save_typetree(tree)
             except Exception:
                 continue
@@ -1211,6 +1259,8 @@ def write_translation(input_file: str, translation_file: str, author: str, trans
             log(translate("write_done", build=build, count=changed))
         except Exception as exc:
             log(translate("save_failed", build=build, error=exc))
+    if kept_total:
+        log(translate("write_identifiers_kept", count=kept_total))
     output = Path(input_file).with_name(f"{Path(input_file).stem}-CN.pack")
     try:
         output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
