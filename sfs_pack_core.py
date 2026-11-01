@@ -224,13 +224,22 @@ def scan_script_meta(scripts_dir) -> dict[str, str]:
         if not m:
             continue
         cs = meta.with_suffix("").with_suffix(".cs")
-        name = class_name_of_file(cs)
+        guid = m.group(1).lower()
+        # 一个 .cs 可能声明多个类型（桩文件尤其常见），全部登记，否则
+        # 那些类在映射表里查不到，对应 .asset 的 m_Script 就不会被改写
+        names = {class_name_of_file(cs)}
+        try:
+            for full, _partial in declared_types(cs):
+                names.add(full.rsplit(".", 1)[-1])
+        except Exception:
+            pass
         # 同名类可能混进 AssetRipper stub，优先记真脚本(非 stub、非 Assembly-CSharp)的 GUID
         cand = (0 if is_asset_ripper_stub(cs) else 1, 0 if "Assembly-CSharp" in cs.as_posix() else 1)
-        if name in result and cand <= rank[name]:
-            continue
-        result[name] = m.group(1).lower()
-        rank[name] = cand
+        for name in names:
+            if name in result and cand <= rank.get(name, (-1, -1)):
+                continue
+            result[name] = guid
+            rank[name] = cand
     return result
 
 
@@ -3024,6 +3033,7 @@ def generate_pack_data(
     log=None,
     backup: bool = True,
     metadata: dict | None = None,
+    out_root: Path | None = None,
 ) -> dict[str, object]:
     """自动生成 ModBuilder 用的 PackData 资产 + 统一模组资产的 AssetBundle 标签。
 
@@ -3039,19 +3049,31 @@ def generate_pack_data(
        Unity 真正读取的位置）；
     4. 原包带 CodeAssembly 时顺手导出 dll，供 ModBuilder 弹窗直接选择。
     改动文件全部先备份到 `toolkit/_PackToolBackup/`。
+
+    `out_root`：产物写到哪个工程（默认 = toolkit_root）。未勾选「并入 Toolkit」时
+    传合并包目录，PackData 与标签就落在合并包里，用户拷 `Assets/` 时一并带过去。
+    ScriptableObject 的脚本 GUID 始终取自 toolkit_root 的 `PackData.cs`。
     """
     if log is None:
         log = print
     rep: dict[str, object] = {"ok": False, "packdata": "", "labeled": 0, "icon": False, "dll": "", "skip": ""}
     toolkit_root = Path(toolkit_root)
-    assets = toolkit_root / "Assets"
-    if not assets.is_dir():
+    tk_assets = toolkit_root / "Assets"
+    # 产物写到哪里：默认写进 Toolkit；**没勾选「并入 Toolkit」时写进合并包**，
+    # 这样用户按 MERGE_README 把 Assets/ 拷进去时 PackData 也跟着过去。
+    # 注意脚本 GUID 永远从 Toolkit 里找（合并包最终也是拷进这个 Toolkit）。
+    out_root = Path(out_root) if out_root else toolkit_root
+    assets = out_root / "Assets"
+    if not tk_assets.is_dir():
         rep["skip"] = "not_toolkit"
+        return rep
+    if not assets.is_dir():
+        rep["skip"] = "no_out_assets"
         return rep
 
     # 1) 找该 Toolkit 自己的 PackData.cs（脚本 guid 因工程而异）
     script_guid = ""
-    for cand in assets.rglob("PackData.cs.meta"):
+    for cand in tk_assets.rglob("PackData.cs.meta"):
         m = re.search(r"guid: ([0-9a-f]{32})", cand.read_text(encoding="utf-8-sig", errors="ignore"))
         if m:
             script_guid = m.group(1)
@@ -3071,7 +3093,8 @@ def generate_pack_data(
     backup_root = toolkit_root / "_PackToolBackup" / (time.strftime("%Y%m%d_%H%M%S") + "_" + mod_name + "_packdata")
 
     def backup_file(p: Path) -> None:
-        if not backup:
+        # 只有直接改 Toolkit 时才需要备份；写进合并包的是新目录，无旧文件可覆盖
+        if not backup or out_root != toolkit_root:
             return
         try:
             rel = p.relative_to(toolkit_root)
@@ -3185,8 +3208,12 @@ def generate_pack_data(
                 labeled += 1
     rep["labeled"] = labeled
     if labeled:
-        log("[PackData] 已给 {n} 个资产的 .meta 设置 AssetBundle 标签 {label} (改动已备份到 {backup})".format(
-            n=labeled, label=mod_name, backup=str(backup_root) if backup else "(已禁用)"))
+        if out_root == toolkit_root:
+            log("[PackData] 已给 {n} 个资产的 .meta 设置 AssetBundle 标签 {label} (改动已备份到 {backup})".format(
+                n=labeled, label=mod_name, backup=str(backup_root) if backup else "(已禁用)"))
+        else:
+            log("[PackData] 已给 {n} 个资产的 .meta 设置 AssetBundle 标签 {label}".format(
+                n=labeled, label=mod_name))
 
     # 6) CodeAssembly：原包带自定义脚本时导出一份 dll 供 ModBuilder 弹窗选择。
     #    关键：必须放在 Assets **之外**。Assets 内所有 .dll 都会被 Unity 当托管插件导入；
@@ -3197,7 +3224,7 @@ def generate_pack_data(
         data = json.loads(Path(pack_file).read_text(encoding="utf-8-sig"))
         ca = data.get("CodeAssembly")
         if isinstance(ca, str) and ca.strip():
-            out_dir = Path(assets).parent / "_PackToolCodeAssembly"
+            out_dir = toolkit_root / "_PackToolCodeAssembly"
             out_dir.mkdir(parents=True, exist_ok=True)
             dll = out_dir / (mod_name + "_CodeAssembly.dll")
             dll.write_bytes(base64.b64decode(ca))
@@ -3207,7 +3234,7 @@ def generate_pack_data(
     except Exception:
         pass
     # 6b) 清理旧版本遗留在 Assets/ModBuilder 下的 CodeAssembly 副本（同名程序集冲突根源）
-    _relocate_duplicate_code_assemblies(assets, log)
+    _relocate_duplicate_code_assemblies(tk_assets, log)
 
     rep["ok"] = True
     return rep
@@ -3989,7 +4016,15 @@ def build_merge_package(
             "- 本包**不含脚本** 脚本由你的 Modding Toolkit 提供 因此**不会重复 不会触发 CS0263**\n"
         )
     readme_lines += [
-        "- 用法 把 `Assets/` 里的内容拷进 Toolkit 工程 `Assets/` 保留全部 `.meta`\n",
+        # 这里必须写死目标层级：只写"拷进 Assets/"时，实测有人把整个 Assets 放进了
+        # `Assets/Resources/Parts/` 里，于是变成 Resources/Parts/Assets/Resources/Parts/…，
+        # SFS 根本扫不到部件。
+        "- 用法 把**本目录下的 `Assets` 文件夹整个拖进 Toolkit 工程的 `Assets` 里**"
+        "（iOS/资源管理器会问是否合并，选合并/替换）\n"
+        "- [!] 千万不要放进 `Assets/Resources/Parts/`：本包内的 `Assets/Resources/Parts/…` "
+        "已经自带这一层，再套一层会变成 `Resources/Parts/Assets/Resources/Parts/…`，SFS 扫不到部件\n"
+        "- 拷完应为 `Assets/Engine Olders/…` 与 `Assets/Resources/Parts/Engine Olders/*.prefab` 两个位置，"
+        "保留全部 `.meta`\n",
         f"- 新增部件统一放在 `Assets/Resources/Parts/{sub_name}/` 子目录(以模组名命名) 与 Toolkit 自带部件分开\n",
         "- 新增部件 prefab 的脚本引用已指向 Toolkit 真实脚本 GUID 导入后即能正常解析 可编辑\n",
         "\n---\n",

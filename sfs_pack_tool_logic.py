@@ -257,6 +257,7 @@ TEXT = {
         "packdata_done": "[PackData] 已自动生成 PackData 资产 {path} 并统一 {labeled} 个资产标签 {label} Unity 里 SFS→打包模组包 选资产+标签即可出包",
         "packdata_fail": "[PackData] [!] 自动生成失败 {error} 可在 Unity 手动创建",
         "packdata_skipped_refused": "[PackData] 并入被拒 未生成 PackData 资产(Toolkit 里还没有这个模组的任何东西 盖了也是空入口)",
+        "packdata_skip": "[PackData] 跳过生成 原因 {reason}",
         "log_dedupe_fail": "[去重] [!] 工程内去重失败 {exc}",
         "repair_start": "开始清理 Toolkit 里残留的 AssetRipper 空壳着色器(零件渲成黑板的根因)...",
         "repair_done": "[修复] 已删除 {stubs} 个空壳着色器 重写 {refs} 处材质引用 同步 {names} 个资产名 备份于 {backup}",
@@ -522,6 +523,7 @@ TEXT = {
         "packdata_done": "[PackData] Generated PackData asset {path} and labeled {labeled} assets '{label}'. In Unity: SFS -> Build Pack, pick the asset + label to build.",
         "packdata_fail": "[PackData] [!] Auto-generation failed: {error} (create it manually in Unity)",
         "packdata_skipped_refused": "[PackData] Merge was refused; no PackData asset generated (nothing of this mod is in the Toolkit yet, so it would be an empty build entry).",
+        "packdata_skip": "[PackData] Generation skipped: {reason}",
         "log_dedupe_fail": "[Dedupe] [!] In-project dedupe failed: {exc}",
         "repair_start": "Cleaning leftover AssetRipper stub shaders in the Toolkit (the cause of black parts)...",
         "repair_done": "[Repair] Deleted {stubs} stub shaders, rewrote {refs} material refs, synced {names} asset names. Backup at {backup}",
@@ -1886,30 +1888,49 @@ class LogicMixin:
             #    注意这里不能再用 new_parts 做门槛：部件全都已存在时 new_parts=0，
             #    而那份已存在的 prefab 恰恰可能正是引用悬空、需要被修好的那个。
             if mrep.get("ok"):
+                merged = False
                 if not install:
                     log(self.t("install_skipped_opt"))
                 else:
                     advance()
                     merged = self.install_into_toolkit(
                         log, Path(toolkit_dir), Path(str(mrep["package_dir"])), mrep)
-                    # 2.5) 自动生成 PackData 资产 + 统一 AssetBundle 标签：
-                    #      并入后用户在 Unity 的 ModBuilder 里选资产+标签即可一键出包
-                    #      并入被拒（同名程序集冲突，一个文件都没写）时不能盖章：
-                    #      Toolkit 里还没有这个模组的任何东西，盖出来是个空出包入口。
-                    advance()
                     if not merged:
+                        # 同名程序集冲突，一个文件都没写；下面 PackData 也不能盖到 Toolkit 上
                         log(self.t("packdata_skipped_refused"))
-                    else:
-                        try:
-                            import sfs_pack_core as keepalive
-                            mod_name = keepalive.mod_folder_name(Path(self.input_file))
-                            prep = keepalive.generate_pack_data(
-                                Path(toolkit_dir), Path(self.input_file), mod_name, log=self.tlog)
-                            if prep.get("ok"):
-                                log(self.t("packdata_done", path=prep.get("packdata", ""),
-                                           labeled=prep.get("labeled", 0), label=mod_name))
-                        except Exception as exc:
-                            log(self.t("packdata_fail", error=exc))
+
+                # 2.5) 自动生成 PackData 资产 + 统一 AssetBundle 标签
+                #      **不论是否并入都要生成**：没勾选并入时写进合并包，
+                #      用户按 MERGE_README 拷 Assets/ 时 PackData 一起过去，
+                #      否则到了 Unity 里还得自己手动建一个 PackData 才能出包。
+                #      并入被拒（merged=False）时不写 Toolkit，避免盖出空出包入口。
+                if install and not merged:
+                    pass
+                else:
+                    advance()
+                    try:
+                        import sfs_pack_core as keepalive
+                        mod_name = keepalive.mod_folder_name(Path(self.input_file))
+                        target_root = Path(toolkit_dir) if install else Path(str(mrep["package_dir"]))
+                        prep = keepalive.generate_pack_data(
+                            Path(toolkit_dir), Path(self.input_file), mod_name,
+                            log=self.tlog, out_root=target_root)
+                        if prep.get("ok"):
+                            log(self.t("packdata_done", path=prep.get("packdata", ""),
+                                       labeled=prep.get("labeled", 0), label=mod_name))
+                            if not install:
+                                # 合并包里的 README 也要提一句，免得用户只拷了 Assets 却不知道
+                                try:
+                                    with (Path(str(mrep["package_dir"])) / "MERGE_README.md").open(
+                                            "a", encoding="utf-8") as fh:
+                                        fh.write(f"\n- PackData 已生成 `{prep.get('packdata', '')}`"
+                                                 f"（随 Assets/ 一起拷入 Toolkit 即可，出包时选它）\n")
+                                except OSError:
+                                    pass
+                        else:
+                            log(self.t("packdata_skip", reason=prep.get("skip", "")))
+                    except Exception as exc:
+                        log(self.t("packdata_fail", error=exc))
 
             # 4) 导出后自检：校验导出工程所有 prefab 的脚本引用是否在 Toolkit 命中
             try:

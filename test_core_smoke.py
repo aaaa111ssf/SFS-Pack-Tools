@@ -1530,6 +1530,41 @@ def test_generate_pack_data(tmp: Path, r: Result) -> None:
     r.check("重复生成幂等", rep2.get("ok") is True and asset.is_file())
 
 
+def test_generate_pack_data_out_root(tmp: Path, r: Result) -> None:
+    print("\n=== 2f-2. 未并入 Toolkit 时 PackData 写进合并包 ===")
+    import sfs_pack_core as ka
+
+    toolkit = tmp / "tk2"
+    write(toolkit / "Assets/Scripts/Needed/PackData.cs.meta", unity_meta("a" * 32))
+
+    pkg = tmp / "pkg"
+    write(pkg / "Assets/RDEP/Other/Fuel.asset", "MonoBehaviour:\n  m_Name: Fuel\n")
+    write(pkg / "Assets/RDEP/Other/Fuel.asset.meta", unity_meta("c" * 32))
+    write(pkg / "Assets/Resources/Parts/RDEP/Foo.prefab", "GameObject:\n  m_Name: Foo\n")
+    write(pkg / "Assets/Resources/Parts/RDEP/Foo.prefab.meta", unity_meta("b" * 32))
+
+    pack = tmp / "mod2.pack"
+    write(pack, json.dumps({"WindowsBuild": "AAAA"}))
+    metadata = {"display_name": "My Mod", "version": "v1.0", "description": "desc",
+                "author": "Someone", "show_icon": False, "icon_path_id": 0}
+
+    rep = ka.generate_pack_data(toolkit, pack, "RDEP", log=lambda *_: None,
+                                metadata=metadata, out_root=pkg)
+    r.check("out_root 模式生成成功", rep.get("ok") is True)
+    asset = pkg / "Assets/ModBuilder/PackData/RDEP.asset"
+    r.check("PackData 落在合并包里", asset.is_file())
+    r.check("m_Script 仍指向 Toolkit 的 PackData.cs",
+            "guid: " + "a" * 32 in asset.read_text(encoding="utf-8"))
+    r.check("Toolkit 里没有被写入空 PackData",
+            not (toolkit / "Assets/ModBuilder/PackData/RDEP.asset").is_file())
+    r.check("合并包内的部件已打标签",
+            "assetBundleName: RDEP" in (pkg / "Assets/Resources/Parts/RDEP/Foo.prefab.meta").read_text(encoding="utf-8"))
+    r.check("合并包内的模组资产已打标签",
+            "assetBundleName: RDEP" in (pkg / "Assets/RDEP/Other/Fuel.asset.meta").read_text(encoding="utf-8"))
+    r.check("原 .meta 的 guid 保留",
+            "b" * 32 in (pkg / "Assets/Resources/Parts/RDEP/Foo.prefab.meta").read_text(encoding="utf-8"))
+
+
 def test_export_dedupe(tmp: Path, r: Result) -> None:
     print("\n=== 2g. 导出工程去重：X 与 X_0 重复资产 ===")
     import sfs_pack_core as ka
@@ -1689,6 +1724,31 @@ def test_repair_engine_17(tmp: Path, r: Result) -> None:
             and "variableName: booster_on" in bbody)
 
 
+def test_scan_script_meta_multiclass(tmp: Path, r: Result) -> None:
+    print("\n=== 2j. 多类桩文件也要进「类名 → GUID」映射 ===")
+    import sfs_pack_core as ka
+
+    G = "a" * 32
+    d = tmp / "multi" / "Scripts"
+    write(d / "SFS_Misc.cs", "\n".join([
+        "using UnityEngine;",
+        "namespace SFS.Audio",
+        "{",
+        "    public class SoundEffect : ScriptableObject { }",
+        "    public class Sound",
+        "    {",
+        "        public AudioClip clip;",
+        "    }",
+        "}",
+        "",
+    ]))
+    write(d / "SFS_Misc.cs.meta", f"fileFormatVersion: 2\nguid: {G}\n")
+
+    m = ka.scan_script_meta(d)
+    r.check("同文件里的 SoundEffect 能查到", m.get("SoundEffect") == G)
+    r.check("同文件里的 Sound 也能查到", m.get("Sound") == G)
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -1707,8 +1767,10 @@ def main() -> int:
         test_translation_key_filtering(tmp, r)
         test_resource_dup_redirect(tmp, r)
         test_generate_pack_data(tmp, r)
+        test_generate_pack_data_out_root(tmp, r)
         test_export_dedupe(tmp, r)
         test_repair_engine_17(tmp, r)
+        test_scan_script_meta_multiclass(tmp, r)
         test_single_platform_decode(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)

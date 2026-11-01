@@ -8,6 +8,69 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt 修复（2026-11-01 之二）
+
+### 中文
+
+**不勾选「并入 Toolkit」时不会生成 PackData**：PackData 的生成整段嵌在
+`if install:` 分支里，只要没勾并入就永远不执行，到了 Unity 的 ModBuilder 里
+还得自己手动建一个 PackData 才能出包。
+
+- `generate_pack_data()` 新增 `out_root` 参数（默认仍是 Toolkit）。未并入时传合并包目录，
+  PackData 与 AssetBundle 标签直接写进合并包，用户拷 `Assets/` 时一并带过去。
+- ScriptableObject 的脚本 GUID 仍然取自目标 Toolkit 的 `PackData.cs`，拷进去即能解析。
+- 跳过时不再静默：新增日志 `[PackData] 跳过生成 原因 <reason>`（`no_packdata_script` /
+  `no_metadata` 等），并在合并包 `MERGE_README.md` 追加 PackData 位置说明。
+- **合并包 MERGE_README 的拷贝说明写死了层级**：此前只写"把 `Assets/` 里的内容拷进
+  Toolkit 工程 `Assets/`"，实测有人把整个 `Assets` 放进了 `Assets/Resources/Parts/`，
+  变成 `Resources/Parts/Assets/Resources/Parts/…`，SFS 扫不到部件。现在明确要求
+  拖进 `Assets/`，并写出"拷完应看到 `Assets/<模组>/…` 与 `Assets/Resources/Parts/<模组>/*.prefab`"。
+
+验证：`test_core_smoke.py` 新增 2f-2（out_root 写入合并包、Toolkit 不留空 PackData、
+两侧标签与 GUID 正确），全量 ALL PASS。
+
+### English
+
+**PackData was never generated when "merge into Toolkit" was off** — the call sat inside the
+`if install:` branch. `generate_pack_data()` now takes `out_root` (defaults to the Toolkit);
+when not installing, PackData and the AssetBundle labels are written into the merge package so
+they travel with `Assets/`. Script GUID still comes from the target Toolkit's `PackData.cs`.
+Skips are no longer silent (`[PackData] Generation skipped: <reason>`), and the merge README now
+spells out the exact copy target — copying the whole `Assets` into `Assets/Resources/Parts/`
+produced `Resources/Parts/Assets/Resources/Parts/…`, which SFS cannot scan.
+
+---
+
+## v2.3.6-PyQt 修复（2026-11-01）
+
+### 中文
+
+导入 1.7 工程后 Odin 报 **Broken Asset / Sound Effect is required / Field is required**，
+根因有三处，全部修掉：
+
+- **类名 → GUID 映射只认一个文件一个类**：1.7 的 `SoundEffect` 定义在多类桩文件
+  `_GameStubs/SFS_Misc.cs` 里，映射表漏了它 → 音频 `.asset` 的 `m_Script` 没被改写 →
+  资源加载成 null（Odin：Broken Asset），`AudioModule.soundEffect` 跟着丢。
+  修法：`scan_script_meta()` 改为登记文件里**所有顶层类型**（同一 GUID）。
+- **工具包侧**：`SoundEffect` 从空桩改成带 `sounds` 列表的真类（配套 `Sound`），
+  这样 `.asset` 里的 clip/volume/pitch 能读出来；`WorldCamera.camera` 加 `new` 消 CS0108。
+- **`TranslatableName: None` 被 Unity 解析成 null**：`TranslationVariable.Field` 里
+  `Loc.fields.TryGetValue(null)` 抛 `ArgumentNullException`（每次重导入都报）。
+  修法：先判空再查表；查不到时**保留默认值**，不要被 `out` 置 null（否则 Odin 报 Field is required）。
+
+验证：1.7 工程重新编译 0 error / 0 CS；5 个 prefab + 2 个音频资源重导入后无 Broken Asset、
+无 ArgumentNullException；`test_core_smoke.py` 新增 2j（多类映射）ALL PASS。
+
+### English
+
+Fixes three causes behind Odin's **Broken Asset / Sound Effect is required / Field is required**
+after importing into the 1.7 toolkit: the class→GUID map only registered one class per file
+(so `SoundEffect` in the multi-class stub file was missed and audio `.asset` script GUIDs were
+left dangling), the `SoundEffect` stub had no `sounds` list, and `TranslatableName: None`
+parses as null which made `Field` throw and then leave `field` null.
+
+---
+
 ## v2.3.6-PyQt 修复（2026-10-31）
 
 ### 中文
