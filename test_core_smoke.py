@@ -1749,6 +1749,89 @@ def test_scan_script_meta_multiclass(tmp: Path, r: Result) -> None:
     r.check("同文件里的 Sound 也能查到", m.get("Sound") == G)
 
 
+def test_strip_custom_components(tmp: Path, r: Result) -> None:
+    print("\n=== 2k. 剥离自定义代码：摘组件、删数据资产、部件保留 ===")
+    import sfs_pack_core as ka
+
+    proj = tmp / "strip_proj" / "Assets"
+    CG = "c" * 32   # 自定义脚本
+    SG = "a" * 32   # 原版脚本
+
+    # 一个部件：Transform + 自定义组件 + 原版组件
+    prefab = "\n".join([
+        "%YAML 1.1",
+        "--- !u!1 &100",
+        "GameObject:",
+        "  m_Component:",
+        "  - component: {fileID: 200}",
+        "  - component: {fileID: 300}",
+        "  m_Name: Foo",
+        "--- !u!4 &200",
+        "Transform:",
+        "  m_GameObject: {fileID: 100}",
+        "--- !u!114 &300",
+        "MonoBehaviour:",
+        f"  m_Script: {{fileID: 11500000, guid: {CG}, type: 3}}",
+        "--- !u!114 &400",
+        "MonoBehaviour:",
+        f"  m_Script: {{fileID: 11500000, guid: {SG}, type: 3}}",
+        "",
+    ])
+    write(proj / "Parts" / "Foo.prefab", prefab)
+    write(proj / "Parts" / "Foo.prefab.meta", unity_meta("b" * 32))
+    # 自定义脚本自己的数据资产（ScriptableObject）→ 脚本没了它活不下来
+    write(proj / "Custom.asset", "MonoBehaviour:\n"
+                                 f"  m_Script: {{fileID: 11500000, guid: {CG}, type: 3}}\n")
+    write(proj / "Custom.asset.meta", unity_meta("d" * 32))
+    # 类名 → GUID 的定位靠 .cs + .meta
+    write(proj / "Scripts" / "Stub.cs", "public class MyCustomModule { }\n")
+    write(proj / "Scripts" / "Stub.cs.meta", unity_meta(CG))
+
+    guids = ka.script_guids_for_classes(proj, ["MyCustomModule"])
+    r.check("按类名能定位到脚本 GUID", guids == {CG})
+
+    stats = ka.strip_custom_components(proj, {CG}, log=lambda *_: None)
+    body = (proj / "Parts" / "Foo.prefab").read_text(encoding="utf-8")
+    r.check("部件本身保留", (proj / "Parts" / "Foo.prefab").is_file())
+    r.check("自定义组件被摘掉", CG not in body)
+    r.check("原版组件保留", SG in body)
+    r.check("GameObject 上的挂点已清", "{fileID: 300}" not in body)
+    r.check("别的挂点不动", "{fileID: 200}" in body)
+    r.check("自定义脚本的数据资产被删除", not (proj / "Custom.asset").is_file())
+    r.check("统计数据正确",
+            stats["components"] == 1 and stats["prefabs"] == 1 and stats["assets"] == 1)
+
+    # 集成：restore_custom_scripts(strip=True) 不进 dll 分支，直接走剥离
+    write(proj / "Parts" / "Bar.prefab", prefab)
+    write(proj / "Parts" / "Bar.prefab.meta", unity_meta("e" * 32))
+    original = ka.custom_monoscript_classes
+    ka.custom_monoscript_classes = lambda _p: {"MyCustomModule"}
+    try:
+        rep = ka.restore_custom_scripts(
+            proj.parent, tmp / "fake.pack", set(), ["MyCustomModule"],
+            log=lambda *_: None, strip=True,
+        )
+    finally:
+        ka.custom_monoscript_classes = original
+    r.check("剥离分支标记正确", rep.get("stripped") is True and rep.get("via") == "stripped")
+    r.check("剥离分支也摘掉了组件", CG not in (proj / "Parts" / "Bar.prefab").read_text(encoding="utf-8"))
+    r.check("剥离时不导出 dll", not rep.get("dll"))
+
+    # 兜底：读不出程序集信息（own 为空）时，Toolkit 里没有的类也要被剥离
+    write(proj / "Parts" / "Baz.prefab", prefab)
+    write(proj / "Parts" / "Baz.prefab.meta", unity_meta("f" * 32))
+    ka.custom_monoscript_classes = lambda _p: set()
+    try:
+        ka.restore_custom_scripts(
+            proj.parent, tmp / "fake2.pack", set(), ["MyCustomModule"],
+            log=lambda *_: None, strip=True,
+        )
+    finally:
+        ka.custom_monoscript_classes = original
+    r.check("兜底：程序集信息缺失也能摘掉组件",
+            CG not in (proj / "Parts" / "Baz.prefab").read_text(encoding="utf-8"))
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="sfs_smoke_"))
     r = Result()
@@ -1771,6 +1854,7 @@ def main() -> int:
         test_export_dedupe(tmp, r)
         test_repair_engine_17(tmp, r)
         test_scan_script_meta_multiclass(tmp, r)
+        test_strip_custom_components(tmp, r)
         test_single_platform_decode(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)

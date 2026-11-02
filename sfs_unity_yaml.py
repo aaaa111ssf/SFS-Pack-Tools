@@ -374,3 +374,51 @@ def mask_guids(text: str, placeholder: str = "guid: <G>") -> str:
         return text
     pieces.append(text[cursor:])
     return "".join(pieces)
+
+
+# Unity YAML 的文档头：`--- !u!114 &123456`
+_DOC_HEAD_RE = re.compile(r"(?m)^--- !u!(\d+) &(-?\d+)")
+# MonoBehaviour 里的脚本引用（flow 写法，一行内）
+_SCRIPT_GUID_RE = re.compile(r"m_Script:\s*\{[^}]*?guid:\s*([0-9a-fA-F]{32})")
+
+
+def strip_monobehaviours(text: str, guids) -> tuple[str, int]:
+    """删掉 m_Script 命中 guids 的 MonoBehaviour 文档，并清掉 GameObject 里的组件挂点。
+
+    剥离自定义脚本用：**部件保留**，只把它上面挂的自定义组件摘掉。
+    返回 (新文本, 摘掉的组件数)。
+    """
+    wanted = {str(g).lower() for g in guids or ()}
+    if not wanted:
+        return text, 0
+    heads = list(_DOC_HEAD_RE.finditer(text))
+    if not heads:
+        return text, 0
+
+    kept: list[str] = []
+    cursor = 0
+    dropped: list[str] = []
+    for i, head in enumerate(heads):
+        start = head.start()
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        if head.group(1) == "114":
+            found = _SCRIPT_GUID_RE.search(text, start, end)
+            if found and found.group(1).lower() in wanted:
+                kept.append(text[cursor:start])   # 这段之前的原样保留
+                cursor = end                      # 跳过整个组件文档
+                dropped.append(head.group(2))
+                continue
+    if not dropped:
+        return text, 0
+    kept.append(text[cursor:])
+    new_text = "".join(kept)
+
+    # GameObject 的 m_Component 列表里还挂着这些组件，行不去掉会留下空槽
+    for anchor in dropped:
+        new_text = re.sub(
+            r"(?m)^[ \t]*-[ \t]*component:[ \t]*\{fileID:[ \t]*"
+            + re.escape(anchor) + r"\}[ \t]*\r?\n",
+            "",
+            new_text,
+        )
+    return new_text, len(dropped)

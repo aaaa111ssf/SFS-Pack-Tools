@@ -28,7 +28,29 @@ from pathlib import Path
 from types import SimpleNamespace
 import webbrowser
 
-import UnityPy
+
+class _LazyModule:
+    """第一次用到才真正 import。
+
+    UnityPy 是启动最大的一笔开销（实测约 2.2 秒，连 PIL 一起拖进来），
+    而绝大多数操作（选包、汉化、剥离）根本用不到它，所以推迟到第一次
+    访问 `UnityPy.load` 时才加载。
+    """
+
+    def __init__(self, name: str):
+        self._name = name
+        self._mod = None
+
+    def _load(self):
+        if self._mod is None:
+            self._mod = __import__(self._name)
+        return self._mod
+
+    def __getattr__(self, item):
+        return getattr(self._load(), item)
+
+
+UnityPy = _LazyModule("UnityPy")
 import sfs_project_exporter as prefab_exporter
 from sfs_official_keys import OFFICIAL_LOC_KEYS
 
@@ -212,10 +234,21 @@ TEXT = {
         "export_frame": "Unity Prefab / 贴图 / 工程导出",
         "builtin_ripper_hint": "使用内置 AssetRipper 随工具打包 无需手动选择或下载",
         "export": "一键导出工程",
+        "export_strip": "剥离代码导出",
+        "export_strip_tip": "导出时不带 mod 自定义脚本：部件上挂的自定义组件会被摘掉（部件保留）",
         "ready": "请选择pack文件",
         "select_pack_first": "请先选择原始 mod.pack",
         "no_pack_title": "未选择文件",
         "export_start": "开始导出",
+        "strip_mode_on": "[导出] 本次按「剥离自定义代码」执行 导出工程里不留自定义脚本",
+        "strip_cancelled": "[导出] 已取消 你选择先不剥离自定义脚本",
+        "strip_dlg_title": "检测到自定义脚本",
+        "strip_dlg_body": "这个包里带自定义脚本：程序集 {dll} 个（{size}），自定义脚本类 {classes} 个。\n\n"
+                          "剥离 = 导出工程里不含这些脚本，部件上挂的自定义组件会被摘掉（部件本身保留）。\n"
+                          "保留 = 脚本随工程一起导出，可以在 Unity 里看和改。\n\n"
+                          "要剥离吗？选错了也没关系，重跑一次导出就行。",
+        "strip_btn_yes": "剥离后导出",
+        "strip_btn_no": "保留 直接导出",
         "toolkit_dir": "Modding Toolkit 工程路径",
         "select_toolkit": "选择 Toolkit",
         "toolkit_hint": "必填 部件会直接导出并合并进这个 Modding Toolkit 只新增 Toolkit 里没有的部件 已有部件自动跳过 导出会先在临时目录中转 完成后把新部件写进 Toolkit 的 Assets",
@@ -489,10 +522,21 @@ TEXT = {
         "export_frame": "Unity Prefab / Texture / Project Export",
         "builtin_ripper_hint": "Uses the built-in AssetRipper (bundled with the tool); no manual selection or download needed.",
         "export": "Quick Export",
+        "export_strip": "Export (strip code)",
+        "export_strip_tip": "Export without the mod's custom scripts; the components they provide are removed from the parts (parts stay).",
         "ready": "Ready. Select a mod.pack; export includes Prefabs, textures, materials, .meta files and Unity project files.",
         "select_pack_first": "Select the source mod.pack first.",
         "no_pack_title": "No input file",
         "export_start": "Starting Unity project export. The output includes Prefabs, textures, materials, .meta files, Packages and ProjectSettings.",
+        "strip_mode_on": "[Export] Custom code will be stripped; the exported project will not contain those scripts.",
+        "strip_cancelled": "[Export] Cancelled; you chose to keep custom scripts for now.",
+        "strip_dlg_title": "Custom scripts detected",
+        "strip_dlg_body": "This pack ships custom scripts: {dll} assembly(ies), {size}, {classes} custom class(es).\n\n"
+                          "Strip = the exported project will not contain them, and the components they provide are removed from the parts (the parts stay).\n"
+                          "Keep = the scripts are exported with the project so you can read or edit them.\n\n"
+                          "Strip them?",
+        "strip_btn_yes": "Strip and export",
+        "strip_btn_no": "Keep and export",
         "export_done": "✔ Unity project export completed. Check the output directory and its ZIP file.",
         "export_failed": "❌ Unity project export failed: {error}",
         "export_busy": "A export task is already running; please wait for it to finish.",
@@ -1705,7 +1749,8 @@ class LogicMixin:
         else:
             log(self.t("repair_dangling_clean", redirected=drep.get("redirected", 0),
                        imported=drep.get("imported", 0), unresolved=drep.get("unresolved", 0)))
-    def export_project(self, log, output: str, toolkit_dir: str = "", install: bool = False) -> None:
+    def export_project(self, log, output: str, toolkit_dir: str = "", install: bool = False,
+                       strip_custom: bool = False, ask_strip=None) -> None:
         # 确定进度分 7 段，按实际耗时分配权重（AssetRipper 导出最慢占大头）
         steps = [
             (0.05, "progress_step_scan"),
@@ -1741,8 +1786,27 @@ class LogicMixin:
             #       代码侧已经守住铁律（拿不准就不删），所以这是可观测性而非安全修复。
             # P2-1：包里带自定义脚本却没装 ilspycmd 时，明确告诉用户去哪儿装。
             self._after_scan_notices(scan, log)
+
+            # 包里带自定义脚本时问一句要不要剥离：剥离后导出工程里不留这些脚本，
+            # 部件上挂的自定义组件也会被摘掉。ask_strip 由界面注入（后台线程 -> 主线程弹窗）。
+            ca = scan.get("code_assembly") or {}
+            custom = list(scan.get("custom_classes") or [])
+            has_code = bool(ca.get("present"))
+            if (has_code or custom) and not strip_custom and ask_strip is not None:
+                choice = ask_strip({
+                    "has_dll": has_code,
+                    "dll_bytes": int(ca.get("bytes") or 0),
+                    "classes": custom,
+                })
+                if choice == "strip":
+                    strip_custom = True
+                elif choice != "keep":
+                    log(self.t("strip_cancelled"))
+                    return
         except Exception as exc:
             log(self.t("log_scan_fail", exc=exc))
+        if strip_custom:
+            log(self.t("strip_mode_on"))
         args = SimpleNamespace(
             input=self.input_file, output_dir=output, zip=None,
             asset_ripper=self._asset_ripper_path_setting(),
@@ -1781,6 +1845,7 @@ class LogicMixin:
                     Path(self.input_file),
                     Path(toolkit_dir),
                     log=self.tlog,
+                    strip_custom=strip_custom,
                 )
                 if report.get("ok"):
                     log(self.t("log_align_done", rewritten=report.get('rewritten_prefabs', 0), refs=report.get('rewritten_refs', 0)))
@@ -1875,6 +1940,7 @@ class LogicMixin:
                         Path(toolkit_dir),
                         merge_dir,
                         log=self.tlog,
+                        strip_custom=strip_custom,
                     )
                     if mrep.get("ok"):
                         log(self.t("log_merge_done", pkg=mrep['package_dir'], new=mrep['new_parts'], skip=mrep['skipped_parts'], copy=mrep['copied_files']))
@@ -1914,7 +1980,7 @@ class LogicMixin:
                         target_root = Path(toolkit_dir) if install else Path(str(mrep["package_dir"]))
                         prep = keepalive.generate_pack_data(
                             Path(toolkit_dir), Path(self.input_file), mod_name,
-                            log=self.tlog, out_root=target_root)
+                            log=self.tlog, out_root=target_root, strip_custom=strip_custom)
                         if prep.get("ok"):
                             log(self.t("packdata_done", path=prep.get("packdata", ""),
                                        labeled=prep.get("labeled", 0), label=mod_name))

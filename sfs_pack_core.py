@@ -11,6 +11,7 @@ AssetRipper 生成的 stub GUID 与包内原始引用不一致，打开工程就
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import shutil
@@ -1269,6 +1270,112 @@ def _remove_conflicting_stubs(assets: Path, class_names, log=None) -> list[str]:
     return removed
 
 
+def script_guids_for_classes(assets: Path, class_names) -> set[str]:
+    """按类名在导出工程里找出对应脚本的 GUID。
+
+    剥离时用：先拿到这些类的 GUID，才能反查"哪些 prefab 用了它们"。
+    必须在删 stub 之前调用——stub 一删，GUID 就查不到了。
+    """
+    wanted = {str(c).rsplit(".", 1)[-1] for c in class_names or ()}
+    if not wanted:
+        return set()
+    guids: set[str] = set()
+    for cs in Path(assets).rglob("*.cs"):
+        names = {fq.rsplit(".", 1)[-1] for fq, _ in declared_types(cs)}
+        if not (names & wanted):
+            continue
+        g = asset_guid_of(cs)
+        if g:
+            guids.add(g)
+    return guids
+
+
+def strip_custom_components(assets: Path, guids: set[str], log=None) -> dict[str, object]:
+    """把部件上挂的自定义脚本组件摘掉（部件本身保留）。
+
+    剥离自定义代码时用：
+    - `*.prefab`：删掉 m_Script 命中 guids 的 MonoBehaviour 文档 + GameObject 上的挂点，
+      部件还在、其它组件照旧；
+    - `*.asset`：这种资产本身就是自定义脚本的数据（ScriptableObject），脚本没了活不下来，
+      直接删掉，否则 Unity 里全是 Broken Asset。
+    """
+    result: dict[str, object] = {"components": 0, "prefabs": 0, "assets": 0, "asset_names": []}
+    if not guids:
+        return result
+    import sfs_unity_yaml as _yaml
+
+    wanted = {g.lower() for g in guids}
+    own_script = re.compile(r"m_Script:\s*\{[^}]*?guid:\s*([0-9a-fA-F]{32})")
+
+    for path in sorted(Path(assets).rglob("*")):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in (".prefab", ".asset"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        if suffix == ".asset":
+            # 资产自身就是自定义脚本的数据：直接删
+            head = own_script.search(text)
+            if not head or head.group(1).lower() not in wanted:
+                continue
+            try:
+                path.unlink()
+                Path(str(path) + ".meta").unlink(missing_ok=True)
+                result["assets"] = int(result["assets"]) + 1
+                result["asset_names"].append(path.name)
+            except OSError:
+                pass
+            continue
+
+        new_text, removed = _yaml.strip_monobehaviours(text, wanted)
+        if not removed:
+            continue
+        try:
+            path.write_text(new_text, encoding="utf-8", newline="")
+        except OSError:
+            continue
+        result["components"] = int(result["components"]) + removed
+        result["prefabs"] = int(result["prefabs"]) + 1
+
+    if log and (result["components"] or result["assets"]):
+        log(f"[自定义] 已从 {result['prefabs']} 个部件上摘掉自定义脚本组件 "
+            f"{result['components']} 个（部件本身保留）")
+        if result["assets"]:
+            log(f"[自定义] 已删除自定义脚本的数据资产 {result['assets']} 个"
+                f"（脚本没了这些资产活不下来）")
+    return result
+
+
+def _find_mod_assembly_dlls(assets: Path, pack_path: Path) -> list[Path]:
+    """按内容找出工程里与包内 CodeAssembly 同源的 dll（不看文件名）。
+
+    AssetRipper 有时代码里没生成 stub，却把 mod 的 dll 当插件留在 Plugins；
+    prefab 上的自定义组件就是靠这个 dll 的 GUID 指过去的。
+    """
+    try:
+        data = json.loads(Path(pack_path).read_text(encoding="utf-8-sig"))
+        raw = data.get("CodeAssembly")
+        if not isinstance(raw, str) or not raw.strip():
+            return []
+        want = hashlib.sha256(base64.b64decode(raw)).digest()
+    except Exception:
+        return []
+
+    out: list[Path] = []
+    for dll in sorted(Path(assets).rglob("*.dll")):
+        try:
+            if hashlib.sha256(dll.read_bytes()).digest() == want:
+                out.append(dll)
+        except OSError:
+            continue
+    return out
+
+
 def install_code_assembly_as_plugin(project_dir: Path, pack_path: Path, class_names=None, log=None) -> dict:
     """方案 B（默认）：把包内真实 CodeAssembly.dll 当托管插件放进工程，零改 prefab。
 
@@ -1420,20 +1527,85 @@ def restore_custom_scripts(
     toolkit_classes: set[str],
     unresolved_classes: list[str],
     log,
+    strip: bool = False,
+    guid_to_class: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """用 pack 自带的 CodeAssembly 反编译出作者自定义脚本，接回导出工程。
 
     关键手法：新脚本的 .meta 直接复用原 stub 的 GUID，prefab 上指向旧 stub 的
     m_Script 因此自动命中，一个引用都不用改；stub 随之删除，避免重复定义。
 
-    返回 {"ok", "dll", "decompiled", "classes", "files", "reason"}
+    strip=True：用户明确要求剥离 —— 既不放 dll、也不生成源码，连自定义类的空壳
+    stub 一起清掉，导出工程里就彻底没有这些脚本了（代价：用它们的部件会变成
+    Missing Script，需要自己重新挂）。
+
+    返回 {"ok", "dll", "decompiled", "classes", "files", "reason", "via", "stripped"}
     """
     result: dict[str, object] = {
         "ok": False, "dll": "", "decompiled": "", "classes": [], "files": 0, "reason": "",
+        "via": "", "stripped": False,
     }
     base = Path(project_dir)
     assets = base / "Assets"
     if not assets.is_dir():
+        return result
+
+    # 包内哪些类是 mod 自己的（按 MonoScript 的 m_AssemblyName 判定，权威口径）
+    own_all: set[str] = set()
+    try:
+        own_all = custom_monoscript_classes(pack_path)
+    except Exception:
+        own_all = set()          # 拿不准就不动：宁可保留空壳也不误删
+    toolkit_names = set(toolkit_classes or ())
+    removable = {c for c in own_all if c in set(unresolved_classes) and c not in toolkit_names}
+
+    if strip:
+        # 兜底：读不出 MonoScript 程序集信息时（实测不少包这样），
+        # "Toolkit 里没有的类"就当成自定义类，否则会剥离了 dll 却把组件留在部件上。
+        targets = set(removable)
+        if not targets and unresolved_classes:
+            targets = {c for c in unresolved_classes if c and c not in toolkit_names}
+            if targets:
+                log(f"[自定义] [!] 未能从包内读出程序集信息 按「Toolkit 里没有的类」兜底处理 {len(targets)} 个")
+        # 先拿到这些类的 GUID，再动手：stub 一删 GUID 就查不到了。
+        # 有的导出工程一个 stub 都没有（AssetRipper 没生成），只能靠 .pack 的结构映射。
+        guids = script_guids_for_classes(assets, targets)
+        for g, cls in (guid_to_class or {}).items():
+            if str(cls).rsplit(".", 1)[-1] in targets:
+                guids.add(str(g).lower())
+        # prefab 上的自定义组件其实是"指向 mod dll 的 guid + 不同 fileID"，
+        # 所以必须先拿到 dll 的 guid（删之前），否则一个都摘不掉
+        dll_files = _find_mod_assembly_dlls(assets, pack_path)
+        for dll in dll_files:
+            g = asset_guid_of(dll)
+            if g:
+                guids.add(g)
+        stripped = strip_custom_components(assets, guids, log)
+
+        removed_dlls: list[str] = []
+        for dll in dll_files:
+            try:
+                dll.unlink()
+                Path(str(dll) + ".meta").unlink(missing_ok=True)
+                removed_dlls.append(dll.name)
+            except OSError:
+                pass
+        if removed_dlls:
+            log(f"[自定义] 已删除工程里的 mod 程序集 {', '.join(removed_dlls)}")
+
+        removed = _remove_conflicting_stubs(assets, targets, log)
+        result.update({
+            "ok": True, "stripped": True, "reason": "stripped_by_user",
+            "classes": sorted(targets), "via": "stripped",
+            "removed_stubs": removed,
+            "removed_dlls": removed_dlls,
+            "stripped_components": stripped["components"],
+            "stripped_prefabs": stripped["prefabs"],
+            "deleted_assets": stripped["assets"],
+            "stripped_guids": sorted(guids),
+        })
+        log(f"[自定义] 已按选择剥离：不导出程序集也不生成源码"
+            f"（自定义类 {len(targets)} 个，清掉空壳 {len(removed)} 个）")
         return result
 
     dll = extract_code_assembly(pack_path, base.parent / f"{base.name}_CodeAssembly.dll")
@@ -1442,6 +1614,8 @@ def restore_custom_scripts(
         return result
     result["dll"] = str(dll)
     log(f"[自定义] 检出 CodeAssembly {dll.stat().st_size:,} 字节 已导出 {dll.name}")
+    if own_all:
+        log(f"[自定义] 包内自定义类 {len(own_all)} 个 其中待处理 {len(removable)} 个")
 
     # 先看 AssetRipper 自己有没有把 mod 程序集当 Plugin 留在工程里
     mod_dll, mod_guid = _find_mod_assembly_dll(assets, dll)
@@ -1461,21 +1635,18 @@ def restore_custom_scripts(
         result["via"] = "dll"
         result["dll_guid"] = mod_guid
         result["classes"] = list(unresolved_classes)
-        # 只清"真正由 mod dll 提供"的类。原版类的 stub 必须留着（align 要重写到 Toolkit 真脚本），
-        # 删了 prefab 就指向不存在的 GUID。
-        # ⚠️ 2026-09-18 事故现场：own 曾把原版类全算进来（m_AssemblyName 带 .dll 后缀），
-        # 原版类一旦在 Toolkit 里查不到就会落进 removable → stub 被删 → 原版脚本全挂，
-        # 且无需任何触发条件。现由 _is_stock_assembly() 归一化，改它前先读那函数的注释。
-        own: set[str] = set()
-        try:
-            own = custom_monoscript_classes(pack_path)
-        except Exception:
-            own = set()          # 拿不准就不删：宁可漏删不可错删
-        toolkit_names = set(toolkit_classes or ())
-        removable = {c for c in own if c in set(unresolved_classes) and c not in toolkit_names}
-        if own:
-            log(f"[自定义] dll 自定义类 {len(removable)} 个 原版类 stub 保留不动")
+        # 只清"真正由 mod dll 提供"的类：原版类的 stub 必须留着（align 要重写到 Toolkit 真脚本）
+        # ⚠️ 2026-09-18 事故现场：曾把原版类全算进来（m_AssemblyName 带 .dll 后缀），
+        # 原版类一旦在 Toolkit 里查不到就会落进 removable → stub 被删 → 原版脚本全挂。
+        # 现由 _is_stock_assembly() 归一化，改它前先读那函数的注释。
+        if own_all:
+            log(f"[自定义] 走 DLL 方案 清空壳 {len(removable)} 个 原版类 stub 保留不动")
         result["removed_stubs"] = _remove_conflicting_stubs(assets, removable, log)
+        # 两套方案只能留一套：dll 在就用 dll，源码目录必须清掉，否则同名类重复定义(CS0101)
+        modcode_dir = assets / "Scripts" / MOD_CODE_DIRNAME
+        if modcode_dir.is_dir():
+            shutil.rmtree(modcode_dir, ignore_errors=True)
+            log(f"[自定义] 已清掉残留的 {MOD_CODE_DIRNAME} 源码目录（避免与 DLL 重复定义）")
         log(f"[自定义] 保留 mod 自有程序集 {mod_dll.name} (meta guid {mod_guid[:8]}…)")
         log(f"[自定义] prefab 的自定义脚本引用已指向该 DLL → 导出工程可直接解析，无需挂接")
         # 反编译只作「要改脚本时」的参考，成败都不影响本次结果（也不进最终包）
@@ -1555,8 +1726,10 @@ def restore_custom_scripts(
     result["files"] = written
     result["classes"] = sorted(restored)
     result["ok"] = written > 0
+    result["via"] = "source"
     if written:
-        log(f"[自定义] 已从 DLL 还原 {written} 个自定义脚本文件 → Assets/Scripts/{MOD_CODE_DIRNAME}")
+        log(f"[自定义] 走源码方案 已从 DLL 还原 {written} 个自定义脚本文件"
+            f" → Assets/Scripts/{MOD_CODE_DIRNAME}")
         if restored:
             log(f"[自定义] 其中 {len(restored)} 个是 prefab 引用的类 {restored}")
     else:
@@ -1569,6 +1742,7 @@ def align_scripts_to_toolkit(
     pack_path: Path,
     toolkit_root: Path,
     log=None,
+    strip_custom: bool = False,
 ) -> dict[str, object]:
     """对 AssetRipper 导出的工程执行脚本免挂对齐。"""
     if log is None:
@@ -1707,9 +1881,14 @@ def align_scripts_to_toolkit(
 
     # 2.5) 自定义脚本还原：pack 带 CodeAssembly 时反编译出源码接回工程，
     #      复用原 stub 的 GUID 所以 prefab 上一个引用都不用改。
+    #      strip_custom=True 时"剥离"：不放 dll、不写源码，导出工程里就没有自定义脚本了。
     custom = restore_custom_scripts(
-        project_dir, pack_path, set(toolkit_map), unresolved_classes, log
+        project_dir, pack_path, set(toolkit_map), unresolved_classes, log,
+        strip=strip_custom, guid_to_class=guid_to_class,
     )
+    report["custom_stripped"] = bool(custom.get("stripped"))
+    report["custom_classes"] = list(custom.get("classes") or [])
+    report["custom_via"] = str(custom.get("via") or "")
     if custom["reason"] == "no_code_assembly" and unresolved_classes:
         log(f"[免挂] [!] 该 pack 未携带 CodeAssembly 这 {len(unresolved_classes)} 个自定义脚本"
             f"拿不到源码 只能保留空壳 stub {unresolved_classes[:8]}"
@@ -1832,6 +2011,15 @@ def align_scripts_to_toolkit(
         log(f"[免挂] [!] 以下原版类在 Toolkit 中找不到源码 无法接上 {stock_unresolved}")
     if unresolved_prefab_names:
         log(f"[免挂] [!] {len(unresolved_prefab_names)} 个文件仍存在未解析脚本引用 {unresolved_prefab_names[:8]}{'...' if len(unresolved_prefab_names) > 8 else ''}")
+
+    # 剥离掉的脚本，引用已经从部件上摘掉了，不该再算"挂空"（否则合并闸门会误拦整包）
+    stripped_guids = {str(g).lower() for g in (custom.get("stripped_guids") or ())}
+    if stripped_guids:
+        dropped_guids = [g for g in list(unresolved_guids) if g.lower() in stripped_guids]
+        for g in dropped_guids:
+            unresolved_guids.pop(g, None)
+        if dropped_guids:
+            log(f"[自定义] 已从挂空清单移除 {len(dropped_guids)} 个被剥离的脚本 GUID")
 
     report.update(
         {
@@ -2079,7 +2267,11 @@ def _merge_copy_custom_scripts(project_assets: Path, prefabs: list, package_asse
             Path(str(dest) + ".meta").write_bytes(meta.read_bytes())
         stats["dll"] += 1
     # 情形2：ModCode 自定义源码（restore_custom_scripts 已剔除与 Toolkit 重名的类，安全）
+    # DLL 和源码只能带一套：两套都进 Toolkit 会出现同名类重复定义（CS0101）
     modcode = Path(project_assets) / "Scripts" / MOD_CODE_DIRNAME
+    if modcode.is_dir() and stats["dll"]:
+        log(f"[合并] 已带上 DLL 所以跳过 ModCode 源码（避免同名类重复定义）")
+        return stats
     if modcode.is_dir():
         for cs in sorted(modcode.rglob("*.cs")):
             rel = cs.relative_to(project_assets)
@@ -3034,6 +3226,7 @@ def generate_pack_data(
     backup: bool = True,
     metadata: dict | None = None,
     out_root: Path | None = None,
+    strip_custom: bool = False,
 ) -> dict[str, object]:
     """自动生成 ModBuilder 用的 PackData 资产 + 统一模组资产的 AssetBundle 标签。
 
@@ -3223,7 +3416,9 @@ def generate_pack_data(
     try:
         data = json.loads(Path(pack_file).read_text(encoding="utf-8-sig"))
         ca = data.get("CodeAssembly")
-        if isinstance(ca, str) and ca.strip():
+        if strip_custom and isinstance(ca, str) and ca.strip():
+            log("[PackData] 已按选择剥离自定义脚本 不再导出 CodeAssembly 副本")
+        elif isinstance(ca, str) and ca.strip():
             out_dir = toolkit_root / "_PackToolCodeAssembly"
             out_dir.mkdir(parents=True, exist_ok=True)
             dll = out_dir / (mod_name + "_CodeAssembly.dll")
@@ -3802,6 +3997,7 @@ def build_merge_package(
     toolkit_root: Path,
     package_dir: Path,
     log=None,
+    strip_custom: bool = False,
 ) -> dict[str, object]:
     """裁剪出只含“Toolkit 没有的新内容”的合并包。
 
@@ -3945,7 +4141,12 @@ def build_merge_package(
     # 4.5) 显式补拷 mod 自有脚本 artifacts：情形1=DLL(Plugins)，情形2=ModCode 源码。
     #      依赖收集阶段被 MERGE_SKIP_SUFFIXES 跳过了这两类，必须在此补上，否则贴进
     #      Toolkit 后自定义脚本引用悬空(就是之前『没挂上』的根因之一)。
-    mod_custom = _merge_copy_custom_scripts(project_assets, new_prefabs, package_assets, log)
+    #      用户选了剥离时整段跳过：合并包里也不带任何自定义脚本。
+    if strip_custom:
+        mod_custom: dict[str, object] = {"dll": 0, "cs": 0, "assets": []}
+        log("[合并] 已按选择剥离自定义脚本 合并包不带 DLL / ModCode 源码")
+    else:
+        mod_custom = _merge_copy_custom_scripts(project_assets, new_prefabs, package_assets, log)
     for p in mod_custom["assets"]:
         needed.add(Path(p))  # 纳入后面的 GUID 冲突预检
     if mod_custom["dll"]:
@@ -4006,7 +4207,12 @@ def build_merge_package(
         f"来源 .pack {pack_path.name}\n",
         f"- 新增部件 {len(new_prefabs)} 个 Toolkit 已有并跳过 {len(skipped)} 个 已拷贝资产 {copied} 个文件(含.meta)\n",
     ]
-    if mod_custom["dll"] or mod_custom["cs"]:
+    if strip_custom:
+        readme_lines.append(
+            "- 本包**已按选择剥离自定义脚本** 不含 DLL / ModCode 源码"
+            " 用到自定义脚本的部件贴进 Toolkit 后会显示 Missing Script 需自己重新挂\n"
+        )
+    elif mod_custom["dll"] or mod_custom["cs"]:
         readme_lines.append(
             f"- 本包**含 mod 自定义脚本** {mod_custom['dll']} 个程序集(DLL) + {mod_custom['cs']} 个源码(ModCode)"
             " 已与 prefab 引用一一对应 贴进 Toolkit 后无需重新挂接\n"

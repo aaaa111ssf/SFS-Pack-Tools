@@ -289,14 +289,24 @@ def _iconpack():
     return SiGlobal.siui.iconpack
 
 
+_ICON_CACHE: dict[tuple[str, str, int], QIcon] = {}
+
+
 def si_icon(name: str, color: str = "", size: int = 18) -> QIcon:
     """按名字取 SiliconUI 内置的 Fluent 图标并渲染成 QIcon。
 
     图标包里的名字不带尺寸段（`ic_fluent_info_filled`），而官方示例经常写
     `ic_fluent_info_16_filled`——后者在包里根本不存在，直接 get() 会抛 KeyError，
     于是图标静默消失。这里两种写法都试一遍。
+
+    渲染结果按 (名字, 颜色, 尺寸) 缓存：切语言/切主题会整个重建界面，
+    不缓存的话几百个 SVG 每次都要重新解析渲染。
     """
     color = color or TEXT_C
+    key = (name, color, size)
+    cached = _ICON_CACHE.get(key)
+    if cached is not None:
+        return cached
     pack = _iconpack()
     candidates = [name]
     stripped = re.sub(r"_\d+_", "_", name)
@@ -320,7 +330,9 @@ def si_icon(name: str, color: str = "", size: int = 18) -> QIcon:
     renderer.render(painter)
     painter.end()
     pm.setDevicePixelRatio(2.0)
-    return QIcon(pm)
+    icon = QIcon(pm)
+    _ICON_CACHE[key] = icon
+    return icon
 
 
 class Panel(QWidget):
@@ -1194,6 +1206,13 @@ class App(QMainWindow, LogicMixin):
         self.export_btn.clicked.connect(self.start_export)
         self._register_busy_button(self.export_btn)
         action_row.addWidget(self.export_btn)
+        # 一键导出时若包里有自定义脚本会弹窗问；这个按钮等于提前回答"剥离"
+        self.strip_export_btn = Btn(self.t("export_strip"), card_export, kind=Btn.KIND_GHOST,
+                                    height=40, min_width=104)
+        self.strip_export_btn.setToolTip(self.t("export_strip_tip"))
+        self.strip_export_btn.clicked.connect(lambda: self.start_export(force_strip=True))
+        self._register_busy_button(self.strip_export_btn)
+        action_row.addWidget(self.strip_export_btn)
         card_export.addLayout(action_row)
         lay.addWidget(card_export)
 
@@ -1498,8 +1517,18 @@ class App(QMainWindow, LogicMixin):
         if not match:
             return 0, 0, 1120, 800
         width, height = int(match.group(1)), int(match.group(2))
-        x = int(match.group(3)) if match.group(3) else 60
-        y = int(match.group(4)) if match.group(4) else 60
+
+        # 坐标可能是 "+-94" 这种写法（负数窗口位置），int() 直接吃会抛 ValueError 崩溃
+        def to_int(text, fallback):
+            if not text:
+                return fallback
+            try:
+                return int(text.lstrip("+"))
+            except ValueError:
+                return fallback
+
+        x = to_int(match.group(3), 60)
+        y = to_int(match.group(4), 60)
         return x, y, width, height
 
     def closeEvent(self, event):  # noqa: N802
@@ -1746,7 +1775,42 @@ class App(QMainWindow, LogicMixin):
         self.run_async(_run, task_key="progress_batch")
 
     # ---------------- 导出 ----------------
-    def start_export(self) -> None:
+    def _ask_strip_custom(self, info: dict) -> str:
+        """后台线程里问一句要不要剥离自定义脚本，返回 "strip" / "keep"。
+
+        弹窗必须回到主线程做（Qt 控件不能跨线程碰），所以这里发一个任务，
+        等主线程弹窗选完再继续跑导出。
+        """
+        done = threading.Event()
+        answer = {"value": "keep"}
+
+        def show() -> None:
+            try:
+                classes = list(info.get("classes") or ())
+                text = self.t(
+                    "strip_dlg_body",
+                    dll=1 if info.get("has_dll") else 0,
+                    size=human_size(int(info.get("dll_bytes") or 0)),
+                    classes=len(classes),
+                )
+                if classes:
+                    preview = "、".join(classes[:6]) + ("…" if len(classes) > 6 else "")
+                    text = f"{text}\n\n{preview}"
+                ok = MsgBox(self, self.t("strip_dlg_title"), text, "question",
+                            ask=True, ok_text=self.t("strip_btn_yes"),
+                            cancel_text=self.t("strip_btn_no")).exec_modal()
+                answer["value"] = "strip" if ok else "keep"
+            except Exception:
+                traceback.print_exc()
+                answer["value"] = "keep"
+            finally:
+                done.set()
+
+        self._ui(show)
+        done.wait()
+        return answer["value"]
+
+    def start_export(self, _checked: bool = False, force_strip: bool = False) -> None:
         if getattr(self, "_export_busy", False):
             self.log(self.t("export_busy"))
             return
@@ -1803,7 +1867,9 @@ class App(QMainWindow, LogicMixin):
             try:
                 import shutil
                 shutil.rmtree(output, ignore_errors=True)
-                self.export_project(log, output, toolkit_dir, bool(self.install_var.get()))
+                self.export_project(log, output, toolkit_dir, bool(self.install_var.get()),
+                                    strip_custom=force_strip,
+                                    ask_strip=None if force_strip else self._ask_strip_custom)
                 self.repair_toolkit(log, toolkit_dir, package_dir)
             finally:
                 self._ui(_done)

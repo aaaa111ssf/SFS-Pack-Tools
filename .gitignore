@@ -15,3 +15,7 @@ _debug.spec
 
 # 开发期临时脚本（build_kit 中 _ 开头，不应进仓库）
 _*.py
+
+# 第三方工具（NSIS 免安装包，体积大且可自行下载）
+third_party/nsis-3.10/
+third_party/nsis.zip

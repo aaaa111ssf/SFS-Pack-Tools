@@ -8,6 +8,101 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt 追加（2026-11-02）
+
+### 中文
+
+**一键导出时可选「剥离自定义代码」**，同时修掉一个会让程序起不来的启动崩溃，并把启动耗时砍掉一半。
+
+#### 新增：剥离自定义代码
+
+- 一键导出扫完包后，若检测到自定义脚本（CodeAssembly 程序集 / 自定义脚本类），弹窗列出
+  数量与体积，二选一：**剥离后导出** / **保留 直接导出**；取消则整次导出不执行。
+- 还原页新增 **「剥离代码导出」** 按钮：等于提前回答"剥离"，不再弹窗。
+- 剥离做的事（`strip_custom=True` 一路传下去）：
+  1. 导出工程里**不放 DLL、不生成 ModCode 源码**；
+  2. **部件上挂的自定义脚本组件被摘掉**（部件本身保留，其它组件照旧）——
+     实现见 `sfs_unity_yaml.strip_monobehaviours()`，连 `m_Component` 里挂点一起清；
+  3. 自定义脚本的数据资产（`.asset` 的 m_Script 指向自定义类）直接删除，避免 Broken Asset；
+  4. 合并包不带脚本、PackData 不再导出 CodeAssembly 副本；
+  5. 被剥离的 GUID 从"挂空清单"里移除，否则合并闸门会误拦整包。
+- 日志会写明剥离了多少个组件、多少个数据资产。
+
+#### 修复：两套自定义脚本方案可能同时落地
+
+- DLL 方案与反编译源码方案现在**互斥**：走 DLL 时会清掉残留的 `Assets/Scripts/ModCode`，
+  合并阶段若已带 DLL 则跳过 ModCode；两套并存会出现同名类重复定义（CS0101）。
+- 日志把「包内自定义类」与「实际要处理的自定义类」分开打印，之前只打后者，看起来像 0 个。
+
+#### 修复：窗口位置为负时启动崩溃
+
+`settings.json` 里存成 `1160x880+-94+…` 时，`int("+-94")` 抛 `ValueError`，程序直接起不来。
+改成容错解析（`lstrip("+")` + 兜底默认值）。
+
+#### 新增：安装型发布（NSIS Setup）
+
+单文件 EXE 每次启动都要把 118 MB 解到临时目录，实测冷启动 **48 秒**（杀软逐个扫描）。
+改用**安装型**：装一次，之后启动 **3.4 秒**。
+
+- `dist/SFS_Pack_Tool_v2.3.6-PyQt_Setup.exe`（78 MB，NSIS 3.10 打的）
+  - 默认装到 `D:\SFS_Pack_Tool`（可改），**不需要管理员权限**
+  - 安装目录里生成快捷方式；桌面 / 开始菜单快捷方式是**可选项且默认不勾**（会写 C 盘）
+  - 自带卸载程序 `卸载.exe`，并在 HKCU 注册卸载项（「应用和功能」里能直接卸）
+  - 静默安装：`SFS_Pack_Tool_v2.3.6-PyQt_Setup.exe /S /D=D:\你的目录`
+- 源码 `SFS_Pack_Tool_Setup.nsi`；NSIS 用免安装 zip 解压到 `third_party/nsis-3.10`，
+  不污染系统：`makensis -V2 SFS_Pack_Tool_Setup.nsi`
+- 单文件版（`..._Embedded_GPL.exe`）仍保留，方便发群。
+
+实测：静默安装 1702 个文件 → 启动 3.36s → 静默卸载后目录与 HKCU 注册表项均已清除。
+
+#### 真包验证（剥离）
+
+用 `Power System and Thermal Management System Test Package.pack`
+（19.2 MB，CodeAssembly 104 KB，10 个自定义类）实测：
+
+| 项目 | 剥离后 |
+| --- | --- |
+| 摘掉的自定义组件 | **40 个**（分布在 19 个部件上） |
+| 部件总数 | 20 个，**全部保留**，原版组件（Part/Mass/Transform…）不动 |
+| 残留 DLL | 0（`AssetsofIce.dll` 已删） |
+| 残留 ModCode 源码 | 0 |
+| 挂空脚本 GUID | **0** |
+| `Assets/Plugins` | 已空 |
+
+关键点：这类 mod 的自定义组件在 prefab 里是「**指向 mod dll 的 guid + 不同 fileID**」，
+按类名去查 GUID 一个都匹配不到——必须先按内容比对出 dll、取它的 guid，再整体摘掉。
+
+#### 性能：启动 5.56s → 2.38s
+
+| 阶段 | 改前 | 改后 |
+| --- | --- | --- |
+| 导入模块 | 3.66s | 1.50s |
+| 建窗口 | 0.52s | 0.68s |
+| 显示 + 首帧 | 1.28s | 0.10s |
+
+- `UnityPy` 改成**懒加载**（第一次真正用到才 import，约省 2.2s）；
+- 图标渲染结果按 `(名字, 颜色, 尺寸)` 缓存，切语言 / 切主题重建界面不再重渲几百个 SVG。
+
+验证：`test_core_smoke.py` 新增 2k（摘组件 / 删数据资产 / 部件保留 / 剥离分支），全量 ALL PASS。
+
+### English
+
+**Optional "strip custom code" during export**, plus a startup crash fix and a ~2x faster launch.
+
+- After the pre-export scan, if custom scripts are found, a dialog shows the count and size and
+  asks **strip** or **keep**; cancelling aborts the export. A dedicated "Export (strip code)"
+  button answers "strip" up front.
+- Stripping removes the DLL and ModCode sources from the export, **detaches the custom components
+  from the parts** (parts stay, other components untouched), deletes `.asset` files whose script is
+  custom (they cannot load anyway), keeps scripts out of the merge package/PackData, and drops the
+  stripped GUIDs from the dangling-reference list so the merge gate does not block.
+- The DLL route and the decompile route are now mutually exclusive (leftover `ModCode` is removed
+  when a DLL is used), avoiding duplicate type definitions (CS0101).
+- Fixed a startup crash when the saved window position is negative (`int("+-94")` raised).
+- Startup 5.56s → 2.38s: lazy `UnityPy` import and a rendered-icon cache.
+
+---
+
 ## v2.3.6-PyQt 修复（2026-11-01 之二）
 
 ### 中文
