@@ -47,6 +47,25 @@ a = Analysis(
     optimize=0,
 )
 
+# 裁掉用不到的东西：界面是 QWidget，不碰 Qt Quick；
+# 自带翻译包也没用（我们有自己的 i18n）。
+# 之前 1700 个文件里有 864 个 .qml + 185 个 .qm + 219 个 .png，全是这套资源，
+# 裁掉后文件数降到 400 出头 —— 杀软逐文件扫描的开销直接少四分之三。
+_DROP_IN_PATH = ("/qml/", "/translations/")
+_DROP_DLL_PREFIX = ("qt5qml", "qt5quick", "qt5positioningquick")
+
+
+def _keep(entry_name: str) -> bool:
+    low = entry_name.replace("\\", "/").lower()
+    if any(part in low for part in _DROP_IN_PATH):
+        return False
+    base = low.rsplit("/", 1)[-1]
+    return not (base.endswith(".dll") and base.startswith(_DROP_DLL_PREFIX))
+
+
+a.datas = [d for d in a.datas if _keep(d[0])]
+a.binaries = [b for b in a.binaries if _keep(b[0])]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

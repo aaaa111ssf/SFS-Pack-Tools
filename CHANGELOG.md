@@ -8,6 +8,36 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt 追加（2026-11-03 之二）
+
+### 中文
+
+**打包瘦身：文件数 1700 → 245。** 这是启动慢的真凶之一——Windows Defender 实时保护
+会逐个文件扫描，1700 个文件每次安装/更新都要过一遍。
+
+- 两个 spec 都加了过滤：去掉 `PyQt5/Qt5/qml/**`（含 864 个 `.qml`、170 个 `.qmlc`、
+  219 个 `png`）与 `PyQt5/Qt5/translations/**`（185 个 `.qm`），以及
+  `Qt5Qml*.dll` / `Qt5Quick*.dll` / `Qt5PositioningQuick.dll`。
+  界面是 QWidget，从不使用 Qt Quick；翻译走我们自己的 i18n，Qt 自带语言包没用。
+- 保留全部关键件：`platforms/qwindows.dll`、`styles/qwindowsvistastyle.dll`、
+  `Qt5Svg.dll`、`imageformats/qico.dll` 均已核对在位。
+- 剩余构成：132 个 dll + 78 个 pyd + 少量 pyi。
+
+效果：安装包体积下降，装完只有 245 个文件，杀软扫描量少四分之三。
+
+### English
+
+**Bundle slimming: 1700 → 245 files.** Windows Defender scans every file on install/update, so
+the file count was one of the real startup costs.
+
+- Both specs now drop `PyQt5/Qt5/qml/**` (864 `.qml`, 170 `.qmlc`, 219 `png`) and
+  `PyQt5/Qt5/translations/**` (185 `.qm`), plus `Qt5Qml*` / `Qt5Quick*` / `Qt5PositioningQuick` DLLs.
+  The UI is pure QWidget and never touches Qt Quick; translations use our own i18n.
+- All critical pieces verified present: `platforms/qwindows.dll`,
+  `styles/qwindowsvistastyle.dll`, `Qt5Svg.dll`, `imageformats/qico.dll`.
+
+---
+
 ## v2.3.6-PyQt 追加（2026-11-03）
 
 ### 中文
