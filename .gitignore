@@ -23,3 +23,6 @@ third_party/nsis.zip
 # 文档只保留 README.md，其余 .md 不进仓库
 *.md
 !README.md
+
+# 测试脚本不进仓库（本地 build_kit 里保留）
+test_*.py
