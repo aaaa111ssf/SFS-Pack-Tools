@@ -19,3 +19,7 @@ _*.py
 # 第三方工具（NSIS 免安装包，体积大且可自行下载）
 third_party/nsis-3.10/
 third_party/nsis.zip
+
+# 文档只保留 README.md，其余 .md 不进仓库
+*.md
+!README.md
