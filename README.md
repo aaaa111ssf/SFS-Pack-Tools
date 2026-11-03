@@ -106,14 +106,17 @@ SFS 的模组包 `.pack` 里塞的是 Unity 资源包（prefab、贴图、材质
 - **贴图之前修好了又挂？** 直接用「一键导出工程」+ 勾「并入 Toolkit」重跑一遍，会自愈。
 - **工具不自动删孤儿文件**（GUID 没人引用的贴图等）。它们无害，留着更安全。
 
-### 六、系统要求与环境
+### 六、系统要求与安装方式
 
 - **Windows 10 / 11 x64**
-- **无需安装 Python**，单文件 EXE（界面用 PyQt5 + SiliconUI，含 Qt 运行时与 numpy，体积比 Tk 版大）
-- 已内置 **AssetRipper 1.1.4**，**导出时不需要联网**
-  （运行包会释放到 EXE 同目录的 `AssetRipper-1.1.4\`；没有写入权限则用用户本地应用数据目录）
-- 第一次运行可能提示「发布者未知 / SmartScreen」，属正常（签名证书不在 Windows 预置信任根里）
-- 界面设置保存在 `%APPDATA%\AFuturestar\SFS-Pack-Tool\settings.json`
+- 两种装法，任选：
+  - **安装包（推荐）**：`SFS_Pack_Tool_v2.3.6-PyQt_Setup.exe`，装完启动约 1～3 秒，自带卸载
+  - **单文件版**：`SFS_Pack_Tool_v2.3.6-PyQt_Embedded_GPL.exe`，免安装，适合临时使用；
+    每次启动都要先解压，所以会比安装版慢
+- **不需要装 Python**，**导出也不需要联网**：AssetRipper 1.1.4 已内置
+  （运行时释放到程序目录；该位置不可写时改用用户的应用数据目录）
+- 首次运行可能提示「未知发布者 / SmartScreen」，属正常（没有商业代码签名证书）
+- 设置与日志保存在 `%APPDATA%\AFuturestar\SFS-Pack-Tool\`
 
 ### 七、其它
 
@@ -122,7 +125,7 @@ SFS 的模组包 `.pack` 里塞的是 Unity 资源包（prefab、贴图、材质
 - 左侧栏底部 **「工具介绍 / 实现原理」** = 工具用途与实现思路
 - 右上角 **「设置」** = AssetRipper 版本、日志保留天数、增量导出、Toolkit 版本探测
 - 右上角语言按钮 = 中英切换（立即生效）
-- 许可：**GPL-3.0**（因内置 AssetRipper），详见 `GPL_COMPLIANCE.md`
+- 许可：**GPL-3.0**（因内置 AssetRipper），详见仓库根目录 `LICENSE` / `LICENSE-GPL-3.0.txt`
 
 ### 关于
 
@@ -242,16 +245,18 @@ The **Repair Toolkit (stub shaders · dangling refs)** button cleans up a projec
 - **It never auto-deletes orphan files** (textures nothing references). They're harmless;
   leaving them in place is safer.
 
-### 6. System requirements
+### 6. Requirements and installation
 
 - **Windows 10 / 11 x64**
-- **No Python required** — single-file EXE (PyQt5 + SiliconUI UI, ships the Qt runtime and numpy, so it is larger than the old Tk build)
-- **AssetRipper 1.1.4 is bundled** — **no internet needed** to export
-  (the runtime is extracted next to the EXE into `AssetRipper-1.1.4\`; if that location isn't
-  writable it falls back to the user's local app-data folder)
+- Two ways to install, pick one:
+  - **Installer (recommended)**: `SFS_Pack_Tool_v2.3.6-PyQt_Setup.exe` — starts in about 1–3 s,
+    ships its own uninstaller
+  - **Single-file build**: `SFS_Pack_Tool_v2.3.6-PyQt_Embedded_GPL.exe` — no install, good for
+    quick one-off use; it unpacks on every launch, so it starts slower
+- **No Python required**, and **no internet needed** to export: AssetRipper 1.1.4 is bundled
+  (extracted next to the program; falls back to the user's app-data folder if that isn't writable)
 - An "Unknown publisher / SmartScreen" warning on first run is normal
-  (the signing certificate isn't in Windows' built-in trust store)
-- Settings are stored in `%APPDATA%\AFuturestar\SFS-Pack-Tool\settings.json`
+- Settings and logs live in `%APPDATA%\AFuturestar\SFS-Pack-Tool\`
 
 ### 7. Misc
 
@@ -260,7 +265,7 @@ The **Repair Toolkit (stub shaders · dangling refs)** button cleans up a projec
 - Bottom of the sidebar **How it works** = what the tool does and why
 - Top right **Settings** = AssetRipper version, log retention, incremental export, Toolkit probe
 - Top right language button = switch Chinese/English instantly
-- License: **GPL-3.0** (because AssetRipper is bundled) — see `GPL_COMPLIANCE.md`
+- License: **GPL-3.0** (because AssetRipper is bundled) — see `LICENSE` / `LICENSE-GPL-3.0.txt`
 
 ### Contact
 
