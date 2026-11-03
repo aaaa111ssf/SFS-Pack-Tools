@@ -1222,7 +1222,9 @@ def extract_texts(input_file: str, output_file: str, translate, log) -> None:
             continue
         log(translate("scan", build=build))
         try:
-            environment = UnityPy.load(base64.b64decode(data[build]))
+            import sfs_pack_core as _core
+            environment = _core.load_env_cached(input_file, build, base64.b64decode(data[build]),
+                                                loader=UnityPy)
         except Exception as exc:
             log(translate("unpack_error", build=build, error=exc))
             continue
@@ -1281,6 +1283,9 @@ def write_translation(input_file: str, translation_file: str, author: str, trans
             continue
         log(translate("writing", build=build))
         try:
+            import sfs_pack_core as _core
+            # 写回会改对象再重新打包，绝不能共用缓存：先清掉这个包的缓存再直连解析
+            _core.invalidate_env_cache(input_file)
             environment = UnityPy.load(base64.b64decode(data[build]))
         except Exception as exc:
             log(translate("decode_failed", build=build, error=exc))

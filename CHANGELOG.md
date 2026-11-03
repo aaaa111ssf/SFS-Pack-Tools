@@ -8,6 +8,60 @@ versions follow semantic versioning.
 
 ---
 
+## v2.3.6-PyQt 追加（2026-11-03）
+
+### 中文
+
+三项性能改动，**没动任何业务逻辑**。
+
+#### 1. UnityPy 环境缓存：扫描少解一半
+
+一次 `scan_pack()` 里 `collect_monoscript_classes` 和 `build_pack_prefab_script_map`
+会把同一个包的每个平台各解一遍。新增 `load_env_cached()`，按
+`(包路径, 修改时间, 大小, 平台)` 缓存已解析的环境，包被替换过自动失效。
+
+- 实测（19.2MB 包，2 个非空平台）：`UnityPy.load` 调用 **4 次 → 2 次**
+- 汉化写回那条路**故意不缓存**（它要改对象再重新打包），并在写回前 `invalidate_env_cache()`
+- 缓存上限 8 条，够两个包的四个平台用，不会随着切包无限涨
+
+#### 2. 启动画面
+
+主界面构造要 0.3~0.7 秒，这期间窗口还没出来，双击后像没反应。
+现在先弹一个 340×180 的深色小窗（图标 + 版本 + 正在加载），主窗口就绪后自动关掉。
+
+- 用 `QTimer.singleShot(0)` 把 `App()` 推到事件循环里，闪屏才画得出来
+- 构造失败时先关闪屏再把异常弹出来，不会留下一个卡住的闪屏
+- `QT_QPA_PLATFORM=offscreen` 或 `SFS_NO_SPLASH=1` 时自动跳过（自动化脚本用）
+
+#### 3. 延迟建页：冷启动再省 0.38 秒
+
+三个页面原本一次性建完（0.68 秒）。现在先放空占位页，切到哪页才真建哪页。
+
+| | 改前 | 改后 |
+| --- | ---: | ---: |
+| `App()` 构造 | 0.68s | **0.30s** |
+| 第 2 页首次进入 | — | 0.13s |
+| 第 3 页首次进入 | — | 0.06s |
+
+验证：`test_core_smoke.py` 新增 2l（缓存复用 / 分平台 / 清缓存），全量 ALL PASS。
+
+### English
+
+Three performance changes, **no business logic touched**.
+
+- **UnityPy environment cache**: `load_env_cached()` keys on (path, mtime, size, platform), so the
+  same bundle is parsed once per scan — `UnityPy.load` calls dropped from 4 to 2 on a 19.2 MB pack.
+  The translation write-back path deliberately bypasses the cache (it mutates and re-packs) and
+  invalidates entries first.
+- **Splash screen**: a 340x180 frameless card appears immediately, the main window is built from a
+  `QTimer.singleShot(0)` callback, and the splash closes itself when the window is ready. Startup
+  failures close the splash first and then surface the traceback. Skipped under offscreen or
+  `SFS_NO_SPLASH=1`.
+- **Lazy page building**: placeholders until a page is first shown; `App()` construction went from
+  0.68s to 0.30s, with the other two pages costing 0.13s / 0.06s on first visit.
+
+---
+
 ## v2.3.6-PyQt 追加（2026-11-02）
 
 ### 中文

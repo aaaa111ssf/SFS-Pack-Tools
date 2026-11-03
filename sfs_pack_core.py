@@ -252,6 +252,47 @@ def build_toolkit_guid_map(toolkit_root) -> dict[str, str]:
     return scan_script_meta(Path(toolkit_root) / "Assets" / "Scripts")
 
 
+# 一次扫描会把同一个包解 8 次（4 平台 × 两个分析函数），这里缓存住已解析的环境
+_ENV_CACHE: dict[tuple[str, int, int, str], object] = {}
+_ENV_CACHE_MAX = 8
+
+
+def load_env_cached(pack_path, platform: str, raw: bytes, loader=None):
+    """读 bundle 环境；同一个包的同一个平台只解析一次。
+
+    一次 scan_pack 里 collect_monoscript_classes 和 build_pack_prefab_script_map
+    各要遍历各平台，不缓存就把同一个 5MB bundle 解两遍（实测扫描 6.7 秒的主因）。
+    key 带上文件大小与修改时间，包被替换过自然失效。
+
+    loader：调用方的 UnityPy 模块，测试里会被打桩替换；不传就自己 import。
+    """
+    try:
+        st = Path(pack_path).stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = (0, 0)
+    key = (str(pack_path), stamp[0], stamp[1], platform)
+    hit = _ENV_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    if loader is None:
+        import UnityPy as loader
+
+    env = loader.load(raw)
+    if len(_ENV_CACHE) >= _ENV_CACHE_MAX:
+        _ENV_CACHE.pop(next(iter(_ENV_CACHE)))   # 先来的先丢，够 2 个包的 4 平台用
+    _ENV_CACHE[key] = env
+    return env
+
+
+def invalidate_env_cache(pack_path) -> None:
+    """丢掉某个包的缓存环境（包被改写前后必须调用，否则读到旧内容）。"""
+    prefix = str(pack_path)
+    for key in [k for k in _ENV_CACHE if k[0] == prefix]:
+        _ENV_CACHE.pop(key, None)
+
+
 def collect_monoscript_classes(pack_path: Path, platforms: tuple[str, ...] = PRE_BUILD_KEYS) -> set[str]:
     """取各平台 Build 里 MonoScript 类名的并集。
 
@@ -273,7 +314,7 @@ def collect_monoscript_classes(pack_path: Path, platforms: tuple[str, ...] = PRE
         if not raw:
             continue
         try:
-            env = UnityPy.load(raw)
+            env = load_env_cached(pack_path, platform, raw)
         except Exception:
             continue  # 该平台 bundle 损坏/无法解析则跳过，不强判
         loaded_any = True
@@ -336,7 +377,7 @@ def collect_monoscript_assemblies(pack_path: Path, platforms: tuple[str, ...] = 
         if not raw:
             continue
         try:
-            env = UnityPy.load(raw)
+            env = load_env_cached(pack_path, platform, raw)
         except Exception:
             continue
         for obj in env.objects:
@@ -417,7 +458,7 @@ def collect_monoscript_pathids(pack_path: Path, platforms: tuple[str, ...] = PRE
         if not raw:
             continue
         try:
-            env = UnityPy.load(raw)
+            env = load_env_cached(pack_path, platform, raw)
         except Exception:
             continue
         for obj in env.objects:
@@ -568,7 +609,7 @@ def build_pack_prefab_script_map(
         if not raw:
             continue
         try:
-            env = UnityPy.load(raw)
+            env = load_env_cached(pack_path, platform, raw)
         except Exception:
             continue
 
@@ -3127,7 +3168,7 @@ def _read_pack_metadata(pack_file: Path) -> dict | None:
         if not isinstance(payload, str) or not payload.strip():
             continue
         try:
-            env = UnityPy.load(base64.b64decode(payload))
+            env = load_env_cached(pack_file, key, base64.b64decode(payload))
         except Exception:
             continue
         for obj in env.objects:

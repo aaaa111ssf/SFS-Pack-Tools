@@ -1749,6 +1749,37 @@ def test_scan_script_meta_multiclass(tmp: Path, r: Result) -> None:
     r.check("同文件里的 Sound 也能查到", m.get("Sound") == G)
 
 
+def test_env_cache(tmp: Path, r: Result) -> None:
+    print("\n=== 2l. UnityPy 环境缓存：同包同平台只解析一次 ===")
+    import sfs_pack_core as ka
+
+    calls = {"n": 0}
+
+    class _Env:
+        pass
+
+    class _Loader:
+        @staticmethod
+        def load(_raw):
+            calls["n"] += 1
+            return _Env()
+
+    pack = tmp / "cache.pack"
+    write(pack, json.dumps({"WindowsBuild": "AAAA"}))
+    ka.invalidate_env_cache(pack)
+
+    first = ka.load_env_cached(pack, "WindowsBuild", b"x", loader=_Loader)
+    second = ka.load_env_cached(pack, "WindowsBuild", b"x", loader=_Loader)
+    other = ka.load_env_cached(pack, "AndroidBuild", b"x", loader=_Loader)
+
+    r.check("同包同平台复用同一个环境", first is second)
+    r.check("不同平台各自解析一次", first is not other and calls["n"] == 2)
+
+    ka.invalidate_env_cache(pack)
+    again = ka.load_env_cached(pack, "WindowsBuild", b"x", loader=_Loader)
+    r.check("清缓存后重新解析", again is not first and calls["n"] == 3)
+
+
 def test_strip_custom_components(tmp: Path, r: Result) -> None:
     print("\n=== 2k. 剥离自定义代码：摘组件、删数据资产、部件保留 ===")
     import sfs_pack_core as ka
@@ -1855,6 +1886,7 @@ def main() -> int:
         test_repair_engine_17(tmp, r)
         test_scan_script_meta_multiclass(tmp, r)
         test_strip_custom_components(tmp, r)
+        test_env_cache(tmp, r)
         test_single_platform_decode(tmp, r)
         test_toolkit_selfcheck(tmp, r)
         test_merge_keeps_mod_dll(tmp, r)

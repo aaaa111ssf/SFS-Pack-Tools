@@ -335,6 +335,66 @@ def si_icon(name: str, color: str = "", size: int = 18) -> QIcon:
     return icon
 
 
+def app_icon() -> QIcon:
+    """程序图标：打包后从 assets/ 取，开发时取工程根目录。"""
+    for candidate in (resource_path("assets/SFS_Pack_Tool_v22.ico"),
+                      Path(__file__).resolve().parent / "SFS_Pack_Tool_v22.ico"):
+        if candidate.is_file():
+            return QIcon(str(candidate))
+    return QIcon()
+
+
+class SplashScreen(QWidget):
+    """开机画面：先让用户看见东西，主界面在后台建。
+
+    App() 构造要 0.6~0.7 秒（三个页面 + 图标），这期间窗口还没出来，
+    用户双击完会以为没反应。这里先画个 340x180 的小窗。
+    刻意不用 siui 控件，纯 QLabel + 自绘圆角，避免把界面库的初始化提前。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.SplashScreen | Qt.FramelessWindowHint)
+        self.setWindowTitle("SFS Pack Tool 启动中")   # 无边框看不到，仅用于任务栏与自动化识别
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(340, 180)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(6)
+
+        icon_label = QLabel(self)
+        icon = app_icon()
+        if not icon.isNull():
+            icon_label.setPixmap(icon.pixmap(56, 56))
+        icon_label.setAlignment(Qt.AlignCenter)
+        lay.addWidget(icon_label)
+
+        title = QLabel("SFS Pack Tool", self)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #e8eaed; font-size: 16px; font-weight: 600;")
+        lay.addWidget(title)
+
+        sub = QLabel(f"{VERSION}  正在加载…", self)
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setStyleSheet("color: #9aa0a6; font-size: 12px;")
+        lay.addWidget(sub)
+
+        screen = QApplication.desktop().availableGeometry(self)
+        self.move(screen.center() - self.rect().center())
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        """深色圆角卡片，配色跟主界面一致。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(27, 29, 33, 245))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
+
+    def finish(self, window: QWidget) -> None:
+        """主窗口出来了就关掉自己（对齐 QSplashScreen 的用法）。"""
+        self.close()
+
+
 class Panel(QWidget):
     """圆角纯色面板（自己画，比 QSS 的 border-radius 更干净）。"""
 
@@ -809,11 +869,7 @@ class App(QMainWindow, LogicMixin):
         return TEXT[self.locale]["window"]
 
     def _app_icon(self) -> QIcon:
-        for candidate in (resource_path("assets/SFS_Pack_Tool_v22.ico"),
-                          Path(__file__).resolve().parent / "SFS_Pack_Tool_v22.ico"):
-            if candidate.is_file():
-                return QIcon(str(candidate))
-        return QIcon()
+        return app_icon()
 
     def _enable_dark_titlebar(self) -> None:
         """让系统标题栏跟随深色主题（Win10 1809+ / Win11）。"""
@@ -1049,10 +1105,16 @@ class App(QMainWindow, LogicMixin):
 
         self._build_sidebar()
 
-        self.pages.addWidget(self._wrap_scroll(self._page_restore()))
-        self.pages.addWidget(self._wrap_scroll(self._page_translate()))
-        self.pages.addWidget(self._wrap_scroll(self._page_strip()))
-        self.pages.setCurrentIndex(max(0, min(self._nav_index, 2)))
+        # 三页先放空占位，用到哪页才真建哪页：冷启动省掉两页的控件与图标
+        self._built_pages = set()
+        for _ in range(3):
+            placeholder = QWidget()
+            placeholder.setStyleSheet(f"background: {BG_WINDOW};")
+            self.pages.addWidget(placeholder)
+
+        target = max(0, min(self._nav_index, 2))
+        self._ensure_page(target)
+        self.pages.setCurrentIndex(target)
 
         if not self.logs:
             self.log(self.t("ready"))
@@ -1122,8 +1184,28 @@ class App(QMainWindow, LogicMixin):
             btn.clicked.connect(slot)
             self.nav_layout.addWidget(btn)
 
+    def _ensure_page(self, index: int) -> None:
+        """第一次切到某页才真正建它（占位页原地换成真页）。"""
+        if index in getattr(self, "_built_pages", set()):
+            return
+        builders = {0: self._page_restore, 1: self._page_translate, 2: self._page_strip}
+        builder = builders.get(index)
+        if builder is None:
+            return
+        current = self.pages.currentIndex()
+        real = self._wrap_scroll(builder())
+        placeholder = self.pages.widget(index)
+        self.pages.insertWidget(index, real)
+        if placeholder is not None:
+            self.pages.removeWidget(placeholder)
+            placeholder.setParent(None)
+            placeholder.deleteLater()
+        self.pages.setCurrentIndex(current)   # 插删页面会挪动当前页，补回来
+        self._built_pages.add(index)
+
     def switch_page(self, index: int) -> None:
         self._nav_index = index
+        self._ensure_page(index)
         self.pages.setCurrentIndex(index)
         if hasattr(self, "_nav_group"):
             button = self._nav_group.button(index)
@@ -2304,8 +2386,30 @@ def main() -> int:
     font.setPixelSize(13)
     app.setFont(font)
 
-    window = App()
-    window.show()
+    # 无头/脚本环境不弹闪屏：offscreen 平台或显式设了 SFS_NO_SPLASH=1
+    headless = (os.environ.get("QT_QPA_PLATFORM", "").startswith("offscreen")
+                or os.environ.get("SFS_NO_SPLASH") == "1")
+    splash = None if headless else SplashScreen()
+    if splash is not None:
+        splash.show()
+        app.processEvents()          # 先把它画出来，别等主界面建完
+
+    def build() -> None:
+        try:
+            window = App()
+        except Exception:            # 建界面失败也要把闪屏关掉，否则用户看到的是卡死
+            traceback.print_exc()
+            if splash is not None:
+                splash.close()
+            MsgBox(None, "启动失败", traceback.format_exc(limit=6), "error").exec_modal()
+            app.exit(1)
+            return
+        window.show()
+        if splash is not None:
+            splash.finish(window)
+
+    # 推到事件循环里再建主界面，闪屏这一步就真的能画出来
+    QTimer.singleShot(0, build)
     return app.exec_()
 
 
