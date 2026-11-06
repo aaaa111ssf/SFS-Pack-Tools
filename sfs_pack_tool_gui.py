@@ -886,7 +886,12 @@ class App(QMainWindow, LogicMixin):
             pass
 
     def t(self, key: str, **kwargs) -> str:
-        return TEXT[self.locale][key].format(**kwargs)
+        template = TEXT[self.locale][key]
+        try:
+            return template.format(**kwargs)
+        except (KeyError, IndexError):
+            # 文案带占位符却没给参数（比如被当成进度标签用）不该把整个任务搞崩
+            return template
 
     def _translation_label_text(self) -> str:
         if self.translation_file:
@@ -1168,6 +1173,8 @@ class App(QMainWindow, LogicMixin):
         for text, icon_name, slot in (
                 (self.t("menu_tutorial_open"), "ic_fluent_book_question_mark_16_filled",
                  self.open_tutorial),
+                (self.t("menu_update_open"), "ic_fluent_arrow_sync_16_filled",
+                 self.open_release_page),
                 (self.t("menu_author_open"), "ic_fluent_people_16_filled", self.show_about_author),
                 (self.t("menu_about_open"), "ic_fluent_info_16_filled", self.show_about_app),
         ):
@@ -1280,6 +1287,8 @@ class App(QMainWindow, LogicMixin):
         action_row.setSpacing(12)
         self.install_toggle = ToggleRow(self.t("install_opt"), card_export,
                                         value=self.install_var.get())
+        # 开关内部的变量才是"当前值"，之前没接上：勾了并入，导出仍按启动时的旧值走
+        self.install_var = self.install_toggle.var
         self.install_toggle.switch.toggled.connect(self.save_user_settings)
         action_row.addWidget(self.install_toggle, 1)
         self.export_btn = Btn(self.t("export"), card_export, kind=Btn.KIND_ACCENT,
@@ -2343,6 +2352,16 @@ class App(QMainWindow, LogicMixin):
         else:
             MsgBox(self, self.t("menu_tutorial"), self.t("tutorial_missing"),
                    "info").exec_modal()
+
+    def open_release_page(self) -> None:
+        """跳转到 GitHub 的 Releases 页面，看有没有新版本。"""
+        url = "https://github.com/aaaa111ssf/SFS-Pack-Tools/releases/latest"
+        try:
+            opened = webbrowser.open(url)
+        except Exception:
+            opened = False
+        if not opened:
+            self.log(self.t("update_open_fail", url=url))
 
     def show_about_author(self) -> None:
         MsgBox(self, self.t("about_author_title"),

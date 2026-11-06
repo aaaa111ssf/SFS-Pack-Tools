@@ -351,6 +351,10 @@ TEXT = {
         "strip_done": "✔ 剥离完成 {out} {size}",
         "strip_fail": "❌ 剥离失败 {error}",
         "menu_tutorial": "教程",
+        "menu_update_open": "检查更新 (GitHub)",
+        "update_open_fail": "[更新] 没能打开浏览器 请手动访问 {url}",
+        "progress_analyze_done": "包信息完成",
+        "progress_strip_done": "剥离完成",
         "menu_tutorial_open": "打开使用教程 (HTML)",
         "menu_author": "关于作者",
         "menu_author_open": "作者与 QQ 群",
@@ -640,6 +644,10 @@ TEXT = {
         "strip_fail": "❌ Strip failed: {error}",
         "tutorial_missing": "tutorial.html not found; make sure it sits next to this program",
         "menu_tutorial": "Tutorial",
+        "menu_update_open": "Check for updates (GitHub)",
+        "update_open_fail": "[Update] Could not open the browser; please visit {url}",
+        "progress_analyze_done": "Pack info done",
+        "progress_strip_done": "Strip done",
         "menu_tutorial_open": "Usage tutorial (HTML)",
         "menu_author": "About Author",
         "menu_author_open": "Author & QQ group",
@@ -1431,7 +1439,7 @@ def analyze_pack(input_file: str, translate, log, progress=None) -> None:
         if progress and candidates:
             progress(0.1 + 0.85 * (candidates.index(key) + 1) / len(candidates), "progress_analyze")
     if progress:
-        progress(1.0, "analyze_done")
+        progress(1.0, "progress_analyze_done")
     log(translate("analyze_done", builds=build_count, parts=part_total, total=human_size(total)))
 
 
@@ -1518,7 +1526,7 @@ def strip_pack(input_file: str, output_file: str, platform_keys, translate, log,
         log(translate("strip_fail", error=exc))
         return
     if progress:
-        progress(1.0, "strip_done")
+        progress(1.0, "progress_strip_done")
     log(translate("strip_done", out=output_file, size=human_size(Path(output_file).stat().st_size)))
 
 
